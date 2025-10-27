@@ -73,7 +73,7 @@ class OnboardingTemplate extends StatelessWidget {
                     onPressed: () {
                       Navigator.pushReplacementNamed(context, nextRoute);
                     },
-                    child: const Text('Siguiente >'),
+                    child: const Text('Siguiente'),
                   ),
                 ],
               ),
