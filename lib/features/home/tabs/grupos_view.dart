@@ -20,6 +20,73 @@ class _GruposViewState extends State<GruposView> {
     await _showCreateGroupDialog();
   }
 
+  Future<void> _onJoinByCodePressed() async {
+    final TextEditingController controller = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+
+    final code = await showDialog<String?>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Unirse por código'),
+          content: Form(
+            key: formKey,
+            child: TextFormField(
+              controller: controller,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Código de invitación',
+                hintText: 'Ingresa el código del grupo',
+              ),
+              validator: (v) {
+                if (v == null || v.trim().isEmpty) {
+                  return 'Ingresa un código válido';
+                }
+                return null;
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(null),
+              child: const Text('Cancelar'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                if (formKey.currentState?.validate() ?? false) {
+                  Navigator.of(context).pop(controller.text.trim());
+                }
+              },
+              child: const Text('Unirse'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (code != null && code.isNotEmpty) {
+      setState(() => _isLoading = true);
+      try {
+        final resp = await _groupService.joinGroup(code);
+        final message =
+            resp['message'] ?? 'Te has unido al grupo correctamente';
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(message)));
+        // Refrescar la lista de grupos
+        await _fetchGroups();
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error al unirse: $e')));
+      } finally {
+        if (mounted) setState(() => _isLoading = false);
+      }
+    }
+  }
+
   Future<void> _showCreateGroupDialog() async {
     final TextEditingController controller = TextEditingController();
     final formKey = GlobalKey<FormState>();
@@ -69,15 +136,16 @@ class _GruposViewState extends State<GruposView> {
       setState(() => _isLoading = true);
       try {
         final resp = await _groupService.createGroup(name: created);
-        // Assume API returns created group with 'name' or 'id' fields
+        // Use server response name when available
         final name = resp['name'] ?? created;
         if (!mounted) return;
-        setState(() {
-          _groups.insert(0, {'name': name});
-        });
+        // Refresh groups list so the newly created group includes server-side
+        // fields (id, members, etc.). This ensures the creator appears
+        // properly when opening the group detail.
+        await _fetchGroups();
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Grupo "$name" creado')));
+        ).showSnackBar(SnackBar(content: Text('Grupo "${name}" creado')));
       } catch (e) {
         if (!mounted) return;
         ScaffoldMessenger.of(
@@ -111,6 +179,32 @@ class _GruposViewState extends State<GruposView> {
           groups.add(Map<String, dynamic>.from(item));
         }
       }
+      // If backend doesn't include member counts in the group list response,
+      // try to fetch members for groups that lack that information.
+      // We'll do this concurrently but keep it best-effort (ignore failures).
+      try {
+        final futures = <Future<void>>[];
+        for (final g in groups) {
+          final memberCount = _extractMemberCount(g);
+          if (memberCount == 0) {
+            final id = g['id']?.toString() ?? g['_id']?.toString();
+            if (id != null) {
+              futures.add(
+                _groupService
+                    .getGroupMembers(id)
+                    .then((members) {
+                      // store the members array so UI can read its length
+                      g['members'] = members;
+                    })
+                    .catchError((_) {
+                      // ignore errors here; it's optional
+                    }),
+              );
+            }
+          }
+        }
+        if (futures.isNotEmpty) await Future.wait(futures);
+      } catch (_) {}
       if (!mounted) return;
       setState(() {
         _groups.clear();
@@ -124,6 +218,57 @@ class _GruposViewState extends State<GruposView> {
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  // Helper to extract member count from a group object using several
+  // conventions the backend might use.
+  int _extractMemberCount(Map<String, dynamic> group) {
+    try {
+      final membersField = group['members'];
+      if (membersField is List) return membersField.length;
+      if (membersField is int) return membersField;
+      if (membersField is Map) {
+        // maybe { count: X }
+        final c =
+            membersField['count'] ??
+            membersField['length'] ??
+            membersField['total'];
+        if (c != null) return int.tryParse(c.toString()) ?? 0;
+      }
+    } catch (_) {}
+
+    final possible =
+        group['membersCount'] ??
+        group['members_count'] ??
+        group['memberCount'] ??
+        group['member_count'] ??
+        group['membersLength'];
+    if (possible != null) return int.tryParse(possible.toString()) ?? 0;
+    return 0;
+  }
+
+  int _extractExpenseCount(Map<String, dynamic> group) {
+    try {
+      final expensesField = group['expenses'];
+      if (expensesField is List) return expensesField.length;
+      if (expensesField is int) return expensesField;
+      if (expensesField is Map) {
+        final c =
+            expensesField['count'] ??
+            expensesField['length'] ??
+            expensesField['total'];
+        if (c != null) return int.tryParse(c.toString()) ?? 0;
+      }
+    } catch (_) {}
+
+    final possibleE =
+        group['expensesCount'] ??
+        group['expenses_count'] ??
+        group['expenseCount'] ??
+        group['expense_count'] ??
+        group['totalExpenses'];
+    if (possibleE != null) return int.tryParse(possibleE.toString()) ?? 0;
+    return 0;
   }
 
   @override
@@ -203,6 +348,39 @@ class _GruposViewState extends State<GruposView> {
               ),
             ),
           ),
+          const SizedBox(height: 12),
+          Center(
+            child: OutlinedButton.icon(
+              onPressed: _onJoinByCodePressed,
+              icon: Icon(Icons.qr_code, color: Colors.blue[700]),
+              label: const Text(
+                'Unirse por código',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black,
+                  fontSize: 16,
+                ),
+              ),
+              style: OutlinedButton.styleFrom(
+                side: BorderSide(color: Colors.blue.shade200, width: 1.4),
+                minimumSize: const Size(260, 48),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                backgroundColor: Colors.white,
+                foregroundColor: Colors.blue,
+                elevation: 0,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 4,
+                ),
+                textStyle: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+            ),
+          ),
           const SizedBox(height: 40),
           // Mostrar lista de grupos o texto cuando no hay
           if (_groups.isEmpty)
@@ -229,6 +407,10 @@ class _GruposViewState extends State<GruposView> {
                   itemBuilder: (context, index) {
                     final group = _groups[index];
                     final name = group['name']?.toString() ?? 'Grupo';
+                    // Extract counts using helper functions
+                    final memberCount = _extractMemberCount(group);
+                    final expenseCount = _extractExpenseCount(group);
+
                     return Card(
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
@@ -238,7 +420,9 @@ class _GruposViewState extends State<GruposView> {
                           name,
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
-                        subtitle: const Text('0 miembros • 0 gastos'),
+                        subtitle: Text(
+                          '$memberCount miembros • $expenseCount gastos',
+                        ),
                         trailing: const Icon(Icons.chevron_right),
                         onTap: () {
                           final id =
