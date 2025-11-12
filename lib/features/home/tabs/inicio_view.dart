@@ -6,6 +6,7 @@ import 'package:cofi/core/services/home_service.dart';
 import 'package:cofi/core/services/metas_service.dart';
 import 'package:cofi/core/services/transaction_service.dart';
 import 'package:cofi/core/services/budget_service.dart';
+import 'package:cofi/core/services/category_service.dart';
 import 'package:flutter/services.dart';
 
 // Paquete para las acciones de deslizar (swipe)
@@ -286,6 +287,7 @@ class _InicioViewState extends State<InicioView> {
           final mapped = fetchedGoals
               .map((g) {
                 return {
+                  'id': g['id'] ?? g['_id'],
                   'title': g['title'] ?? g['name'] ?? 'Meta',
                   'current': _toDouble(
                     g['currentAmount'] ??
@@ -375,33 +377,6 @@ class _InicioViewState extends State<InicioView> {
                 ],
               )
             else ...[
-              // Account selector: built from notifier so changing accounts does
-              // not rebuild the whole screen.
-              ValueListenableBuilder<List<Map<String, dynamic>>>(
-                valueListenable: _accountsNotifier,
-                builder: (context, accs, _) {
-                  if (accs.isEmpty) return const SizedBox.shrink();
-                  return DropdownButtonFormField<String>(
-                    value: selectedAccountId,
-                    decoration: const InputDecoration(labelText: 'Cuenta'),
-                    items: accs
-                        .map(
-                          (a) => DropdownMenuItem<String>(
-                            value: (a['id'] ?? '').toString(),
-                            child: Text((a['name'] ?? 'Cuenta').toString()),
-                          ),
-                        )
-                        .toList(),
-                    onChanged: (v) {
-                      // small local state change only
-                      _safeSetState(() {
-                        selectedAccountId = v;
-                      });
-                    },
-                  );
-                },
-              ),
-              const SizedBox(height: 8),
               _buildTotalBalanceCard(context),
             ],
             const SizedBox(height: 16),
@@ -410,8 +385,11 @@ class _InicioViewState extends State<InicioView> {
             _buildRecentMovements(),
             const SizedBox(height: 20),
             _buildSavingsGoals(context),
+            const SizedBox(height: 24),
+            // 📊 GRÁFICOS PRINCIPALES
+            _buildIncomeByCategory(),
             const SizedBox(height: 20),
-            _buildReports(),
+            _buildWeeklyExpenses(),
             const SizedBox(height: 80),
           ],
         ),
@@ -541,17 +519,36 @@ class _InicioViewState extends State<InicioView> {
                             color: Colors.black87,
                           ),
                         ),
-                        Text(
-                          'S/ ${monthly.toStringAsFixed(2)} / S/ ${goal.toStringAsFixed(2)}',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Colors.grey[600],
-                            fontWeight: FontWeight.w500,
+                        if (goal > 0)
+                          InkWell(
+                            onTap: () => _showBudgetModal(context),
+                            borderRadius: BorderRadius.circular(20),
+                            child: Container(
+                              padding: const EdgeInsets.all(6),
+                              decoration: BoxDecoration(
+                                color: Colors.blue.shade50,
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Icon(
+                                Icons.edit,
+                                size: 16,
+                                color: Colors.blue.shade700,
+                              ),
+                            ),
                           ),
-                        ),
                       ],
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 8),
+                    // Montos debajo del título
+                    Text(
+                      'S/ ${monthly.toStringAsFixed(2)} / S/ ${goal.toStringAsFixed(2)}',
+                      style: TextStyle(
+                        fontSize: 18,
+                        color: Colors.grey[800],
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
                     ClipRRect(
                       borderRadius: BorderRadius.circular(10),
                       child: SizedBox(
@@ -600,25 +597,9 @@ class _InicioViewState extends State<InicioView> {
   }
 
   void _showBudgetModal(BuildContext context) {
-    // Si ya existe un presupuesto mensual, no permitir modificarlo desde UI
-    if (monthlyBudgetGoal > 0) {
-      showDialog(
-        context: context,
-        builder: (dctx) => AlertDialog(
-          title: const Text('Presupuesto fijo'),
-          content: const Text(
-            'El presupuesto mensual ya fue establecido y no se puede modificar desde aquí.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dctx),
-              child: const Text('OK'),
-            ),
-          ],
-        ),
-      );
-      return;
-    }
+    // Determinar si estamos editando o creando
+    final bool isEditing = monthlyBudgetGoal > 0;
+    
     final controller = TextEditingController(
       text: monthlyBudgetGoal > 0 ? monthlyBudgetGoal.toStringAsFixed(2) : '',
     );
@@ -630,10 +611,6 @@ class _InicioViewState extends State<InicioView> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (ctx) {
-        String? selectedCategoryId = categories.isNotEmpty
-            ? categories.first['id']?.toString()
-            : null;
-
         return StatefulBuilder(
           builder: (ctx2, setModalState) {
             return Padding(
@@ -646,47 +623,59 @@ class _InicioViewState extends State<InicioView> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text(
-                    'Establecer Presupuesto Mensual',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 12),
-
-                  if (categories.isNotEmpty) ...[
-                    DropdownButtonFormField<String>(
-                      value: selectedCategoryId,
-                      decoration: InputDecoration(
-                        labelText: 'Categoría',
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        filled: true,
-                        fillColor: Colors.grey.shade50,
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        isEditing ? Icons.edit : Icons.add_circle_outline,
+                        color: Colors.blue.shade700,
+                        size: 24,
                       ),
-                      items: categories
-                          .map(
-                            (c) => DropdownMenuItem<String>(
-                              value: (c['id'] ?? c['_id'] ?? '').toString(),
-                              child: Text(
-                                (c['name'] ?? c['title'] ?? 'Categoría')
-                                    .toString(),
-                              ),
+                      const SizedBox(width: 8),
+                      Text(
+                        isEditing 
+                          ? 'Editar Presupuesto Mensual' 
+                          : 'Establecer Presupuesto Mensual',
+                        style: const TextStyle(
+                          fontSize: 18, 
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (isEditing) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.info_outline,
+                            size: 16,
+                            color: Colors.blue.shade700,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Presupuesto actual: S/ ${monthlyBudgetGoal.toStringAsFixed(2)}',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.blue.shade700,
+                              fontWeight: FontWeight.w500,
                             ),
-                          )
-                          .toList(),
-                      onChanged: (v) {
-                        setModalState(() {
-                          selectedCategoryId = v;
-                        });
-                      },
+                          ),
+                        ],
+                      ),
                     ),
-                    const SizedBox(height: 12),
-                  ] else ...[
-                    const Text(
-                      'No hay categorías disponibles. Crea una categoría antes.',
-                    ),
-                    const SizedBox(height: 12),
                   ],
+                  const SizedBox(height: 12),
 
                   TextField(
                     controller: controller,
@@ -728,25 +717,10 @@ class _InicioViewState extends State<InicioView> {
                           return;
                         }
 
-                        if (selectedCategoryId == null ||
-                            selectedCategoryId!.isEmpty) {
-                          if (mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text(
-                                  'Selecciona una categoría antes de guardar.',
-                                ),
-                                backgroundColor: Colors.red,
-                              ),
-                            );
-                          }
-                          return;
-                        }
-
                         final bs = BudgetService();
                         final success = await bs.saveMonthlyBudget(
                           value,
-                          categoryId: selectedCategoryId,
+                          categoryId: null,
                         );
                         if (success) {
                           monthlyBudgetGoal = value;
@@ -764,9 +738,12 @@ class _InicioViewState extends State<InicioView> {
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
                                 content: Text(
-                                  'Presupuesto mensual guardado: S/ ${value.toStringAsFixed(2)}',
+                                  isEditing
+                                    ? 'Presupuesto actualizado: S/ ${value.toStringAsFixed(2)}'
+                                    : 'Presupuesto mensual guardado: S/ ${value.toStringAsFixed(2)}',
                                 ),
-                                backgroundColor: Colors.blue,
+                                backgroundColor: Colors.green,
+                                duration: const Duration(seconds: 3),
                               ),
                             );
                           }
@@ -784,11 +761,81 @@ class _InicioViewState extends State<InicioView> {
                           }
                         }
                       },
-                      backgroundColor: Colors.blue.shade500,
-                      icon: Icons.save,
-                      label: 'Guardar Presupuesto',
+                      backgroundColor: isEditing 
+                        ? Colors.orange.shade600 
+                        : Colors.blue.shade500,
+                      icon: isEditing ? Icons.edit : Icons.save,
+                      label: isEditing 
+                        ? 'Actualizar Presupuesto' 
+                        : 'Guardar Presupuesto',
                     ),
                   ),
+                  if (isEditing) ...[
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: TextButton.icon(
+                        onPressed: () {
+                          // Confirmar antes de eliminar
+                          showDialog(
+                            context: context,
+                            builder: (dialogCtx) => AlertDialog(
+                              title: const Text('Eliminar Presupuesto'),
+                              content: const Text(
+                                '¿Estás seguro de que deseas eliminar el presupuesto mensual? Esta acción no se puede deshacer.',
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(dialogCtx),
+                                  child: const Text('Cancelar'),
+                                ),
+                                TextButton(
+                                  onPressed: () async {
+                                    Navigator.pop(dialogCtx); // cerrar diálogo
+                                    
+                                    // Resetear el presupuesto localmente
+                                    monthlyBudgetGoal = 0.0;
+                                    _monthlyBudgetGoalNotifier.value = 0.0;
+                                    
+                                    // Recalcular balance
+                                    totalBalance = movements.fold(
+                                      0.0,
+                                      (sum, m) => sum + _toDouble(m['amount']),
+                                    );
+                                    _totalBalanceNotifier.value = totalBalance;
+                                    
+                                    Navigator.pop(ctx); // cerrar modal
+                                    
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(
+                                          content: Text(
+                                            'Presupuesto eliminado correctamente',
+                                          ),
+                                          backgroundColor: Colors.orange,
+                                          duration: Duration(seconds: 2),
+                                        ),
+                                      );
+                                    }
+                                  },
+                                  style: TextButton.styleFrom(
+                                    foregroundColor: Colors.red,
+                                  ),
+                                  child: const Text('Eliminar'),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                        icon: const Icon(Icons.delete_outline),
+                        label: const Text('Eliminar Presupuesto'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: Colors.red.shade700,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 8),
                 ],
               ),
@@ -799,68 +846,617 @@ class _InicioViewState extends State<InicioView> {
     );
   }
 
+  // 🟢 Gráfico de Ingresos por Categoría
+  Widget _buildIncomeByCategory() {
+    return ValueListenableBuilder<List<Map<String, dynamic>>>(
+      valueListenable: _movementsNotifier,
+      builder: (context, movementsList, _) {
+        // Filtrar ingresos de los últimos 7 días
+        final now = DateTime.now();
+        final incomeByCategory = <String, double>{};
+        final categoryNames = <String, String>{};
+        
+        // Mapear IDs de categoría a nombres
+        for (final cat in categories) {
+          final id = (cat['_id'] ?? cat['id'])?.toString();
+          final name = (cat['name'] ?? cat['title'] ?? 'Sin categoría').toString();
+          if (id != null) categoryNames[id] = name;
+        }
+        
+        for (final t in movementsList) {
+          try {
+            // Verificar tipo de transacción
+            final typeRaw = t['type'] ?? t['tipo'] ?? '';
+            final typeStr = typeRaw.toString().toLowerCase();
+            final rawAmount = t['amount'] ?? t['monto'] ?? 0;
+            final amount = rawAmount is num
+                ? rawAmount.toDouble()
+                : double.tryParse(rawAmount?.toString() ?? '0') ?? 0.0;
+            
+            // Determinar si es ingreso
+            bool isIncome = typeStr.contains('income') || 
+                           typeStr.contains('ingres') || 
+                           amount > 0;
+            
+            if (!isIncome) continue;
+            
+            // Verificar si está en los últimos 7 días
+            final rawDate = t['occurredAt'] ?? t['createdAt'] ?? t['date'];
+            DateTime dt;
+            if (rawDate is DateTime)
+              dt = rawDate;
+            else if (rawDate is int)
+              dt = DateTime.fromMillisecondsSinceEpoch(rawDate);
+            else
+              dt = DateTime.tryParse(rawDate?.toString() ?? '') ?? now;
+
+            final diff = now.difference(dt).inDays;
+            if (diff < 0 || diff > 6) continue;
+
+            // Obtener categoría (usar ID primero, luego nombre)
+            final categoryId = (t['categoryId'] ?? t['category'])?.toString();
+            String categoryName = 'Sin categoría';
+            
+            if (categoryId != null && categoryNames.containsKey(categoryId)) {
+              categoryName = categoryNames[categoryId]!;
+            } else if (t['categoryName'] != null) {
+              categoryName = t['categoryName'].toString();
+            } else if (categoryId != null) {
+              categoryName = categoryId;
+            }
+            
+            incomeByCategory[categoryName] = 
+                (incomeByCategory[categoryName] ?? 0) + amount.abs();
+          } catch (_) {}
+        }
+
+        // Ordenar por monto y tomar top 5
+        final sortedEntries = incomeByCategory.entries.toList()
+          ..sort((a, b) => b.value.compareTo(a.value));
+        final topEntries = sortedEntries.take(5).toList();
+        
+        return Card(
+          elevation: 3,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  Colors.green.shade50,
+                  Colors.white,
+                ],
+              ),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.green.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(
+                        Icons.trending_up,
+                        color: Colors.green.shade700,
+                        size: 28,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Ingresos por Categoría',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.green.shade900,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Últimos 7 días',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.green.shade700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  height: 200,
+                  child: topEntries.isEmpty
+                      ? Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.insert_chart, size: 48, color: Colors.grey.shade300),
+                              const SizedBox(height: 12),
+                              Text(
+                                'No hay ingresos en los últimos 7 días',
+                                style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
+                              ),
+                            ],
+                          ),
+                        )
+                      : _buildIncomeChart(topEntries),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildIncomeChart(List<MapEntry<String, double>> topEntries) {
+    final maxValue = topEntries.first.value;
+
+    return Column(
+      children: [
+        Expanded(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: topEntries.map((entry) {
+              final barHeight = (entry.value / maxValue) * 140;
+              return Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Text(
+                        'S/ ${entry.value.toStringAsFixed(0)}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.green.shade700,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 600),
+                        curve: Curves.easeOutCubic,
+                        height: barHeight.clamp(20.0, 140.0),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.bottomCenter,
+                            end: Alignment.topCenter,
+                            colors: [
+                              Colors.green.shade400,
+                              Colors.green.shade600,
+                            ],
+                          ),
+                          borderRadius: BorderRadius.circular(8),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.green.shade300.withOpacity(0.5),
+                              blurRadius: 4,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: topEntries.map((entry) {
+            return Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2),
+                child: Text(
+                  entry.key.length > 8 
+                      ? '${entry.key.substring(0, 8)}...'
+                      : entry.key,
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: Colors.grey.shade700,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
+  }
+
+  // 🔴 Gráfico de Gastos de la Semana
+  Widget _buildWeeklyExpenses() {
+    return ValueListenableBuilder<List<Map<String, dynamic>>>(
+      valueListenable: _movementsNotifier,
+      builder: (context, movementsList, _) {
+        // Obtener últimos 7 días
+        final now = DateTime.now();
+        final Map<String, double> dailyExpenses = {};
+        
+        // Inicializar últimos 7 días
+        for (int i = 6; i >= 0; i--) {
+          final date = now.subtract(Duration(days: i));
+          final label = '${date.day}/${date.month}';
+          dailyExpenses[label] = 0.0;
+        }
+
+        // Sumar gastos por día
+        for (final t in movementsList) {
+          try {
+            final typeRaw = t['type'] ?? t['tipo'] ?? '';
+            final typeStr = typeRaw.toString().toLowerCase();
+            final rawAmount = t['amount'] ?? t['monto'] ?? 0;
+            final amount = rawAmount is num
+                ? rawAmount.toDouble()
+                : double.tryParse(rawAmount?.toString() ?? '0') ?? 0.0;
+            
+            // Determinar si es gasto
+            bool isExpense = typeStr.contains('expense') || 
+                            typeStr.contains('gasto') || 
+                            amount < 0;
+            
+            if (!isExpense) continue;
+            
+            // Obtener fecha
+            final rawDate = t['occurredAt'] ?? t['createdAt'] ?? t['date'];
+            DateTime dt;
+            if (rawDate is DateTime)
+              dt = rawDate;
+            else if (rawDate is int)
+              dt = DateTime.fromMillisecondsSinceEpoch(rawDate);
+            else
+              dt = DateTime.tryParse(rawDate?.toString() ?? '') ?? now;
+
+            // Verificar si está en los últimos 7 días
+            final diff = now.difference(dt).inDays;
+            if (diff >= 0 && diff <= 6) {
+              final label = '${dt.day}/${dt.month}';
+              if (dailyExpenses.containsKey(label)) {
+                dailyExpenses[label] = 
+                    (dailyExpenses[label] ?? 0) + amount.abs();
+              }
+            }
+          } catch (_) {}
+        }
+
+        final values = dailyExpenses.values.toList();
+        final labels = dailyExpenses.keys.toList();
+
+        return Card(
+          elevation: 3,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  Colors.red.shade50,
+                  Colors.white,
+                ],
+              ),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.red.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(
+                        Icons.trending_down,
+                        color: Colors.red.shade700,
+                        size: 28,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Gastos de la Semana',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.red.shade900,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Últimos 7 días',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.red.shade700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  height: 230,
+                  child: values.every((v) => v == 0)
+                      ? Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.insert_chart, size: 48, color: Colors.grey.shade300),
+                              const SizedBox(height: 12),
+                              Text(
+                                'No hay gastos en los últimos 7 días',
+                                style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
+                              ),
+                            ],
+                          ),
+                        )
+                      : _buildWeeklyChart(values, labels),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildWeeklyChart(List<double> values, List<String> labels) {
+    final maxValue = values.isEmpty ? 1.0 : values.reduce((a, b) => a > b ? a : b);
+    final usableMax = maxValue > 0 ? maxValue : 1.0;
+    final now = DateTime.now();
+
+    return Column(
+      children: [
+        Expanded(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: List.generate(values.length, (i) {
+              final barHeight = (values[i] / usableMax) * 120;
+              return Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      if (values[i] > 0)
+                        Text(
+                          'S/ ${values[i].toStringAsFixed(0)}',
+                          style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.red.shade700,
+                          ),
+                        ),
+                      const SizedBox(height: 4),
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 600),
+                        curve: Curves.easeOutCubic,
+                        height: barHeight.clamp(4.0, 120.0),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.bottomCenter,
+                            end: Alignment.topCenter,
+                            colors: [
+                              Colors.red.shade400,
+                              Colors.red.shade600,
+                            ],
+                          ),
+                          borderRadius: BorderRadius.circular(8),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.red.shade300.withOpacity(0.5),
+                              blurRadius: 4,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: List.generate(labels.length, (i) {
+            // Obtener día de la semana
+            final parts = labels[i].split('/');
+            final day = int.tryParse(parts[0]) ?? 1;
+            final month = int.tryParse(parts[1]) ?? 1;
+            final date = DateTime(now.year, month, day);
+            final weekday = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'][date.weekday % 7];
+            
+            return Expanded(
+              child: Column(
+                children: [
+                  Text(
+                    weekday,
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: Colors.grey.shade700,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  Text(
+                    labels[i],
+                    style: TextStyle(
+                      fontSize: 9,
+                      color: Colors.grey.shade600,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            );
+          }),
+        ),
+      ],
+    );
+  }
+
   /// --- MOVIMIENTOS RECIENTES (CON SWIPE ACTIONS) ---
   Widget _buildRecentMovements() {
     return ValueListenableBuilder<List<Map<String, dynamic>>>(
       valueListenable: _movementsNotifier,
       builder: (context, movementsList, _) {
+        // Calcular altura máxima para 3 elementos (aproximadamente 80px cada uno)
+        const double itemHeight = 80.0;
+        const int maxVisibleItems = 3;
+        final double maxHeight = itemHeight * maxVisibleItems;
+        
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Movimientos Recientes',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Movimientos Recientes',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                if (movementsList.length > maxVisibleItems)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.shade50,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      '${movementsList.length} total',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.blue.shade700,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+              ],
             ),
             const SizedBox(height: 8),
-            ListView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: movementsList.length,
-              itemBuilder: (context, index) {
-                final movement = movementsList[index];
-                return Slidable(
-                  key: Key(
-                    (movement['title'] ?? '') + (movement['date'] ?? ''),
-                  ),
-
-                  startActionPane: ActionPane(
-                    motion: const DrawerMotion(),
-                    children: [
-                      SlidableAction(
-                        onPressed: (context) {
-                          _showEditTransactionModal(context, index);
-                        },
-                        backgroundColor: Colors.blue,
-                        foregroundColor: Colors.white,
-                        icon: Icons.edit,
-                        label: 'Editar',
+            // Container con altura máxima y scroll independiente
+            Container(
+              constraints: BoxConstraints(
+                maxHeight: movementsList.isEmpty 
+                    ? 100 
+                    : (movementsList.length > maxVisibleItems 
+                        ? maxHeight 
+                        : movementsList.length * itemHeight),
+              ),
+              child: movementsList.isEmpty
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(32.0),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.receipt_long_outlined,
+                              size: 48,
+                              color: Colors.grey.shade400,
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              'No hay movimientos',
+                              style: TextStyle(
+                                color: Colors.grey.shade600,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ],
-                  ),
+                    )
+                  : ListView.builder(
+                      padding: EdgeInsets.zero,
+                      // Habilitar scroll solo cuando hay más de 6 elementos
+                      physics: movementsList.length > maxVisibleItems
+                          ? const AlwaysScrollableScrollPhysics()
+                          : const NeverScrollableScrollPhysics(),
+                      shrinkWrap: true,
+                      itemCount: movementsList.length,
+                      itemBuilder: (context, index) {
+                        final movement = movementsList[index];
+                        return Slidable(
+                          key: Key(
+                            (movement['title'] ?? '') + (movement['date'] ?? ''),
+                          ),
 
-                  endActionPane: ActionPane(
-                    motion: const DrawerMotion(),
-                    children: [
-                      SlidableAction(
-                        onPressed: (context) {
-                          _deleteMovement(context, index);
-                        },
-                        backgroundColor: const Color(0xFFFE4A49),
-                        foregroundColor: Colors.white,
-                        icon: Icons.delete,
-                        label: 'Eliminar',
-                      ),
-                    ],
-                  ),
+                          startActionPane: ActionPane(
+                            motion: const DrawerMotion(),
+                            children: [
+                              SlidableAction(
+                                onPressed: (context) {
+                                  _showEditTransactionModal(context, index);
+                                },
+                                backgroundColor: Colors.blue,
+                                foregroundColor: Colors.white,
+                                icon: Icons.edit,
+                                label: 'Editar',
+                              ),
+                            ],
+                          ),
 
-                  child: _MovementItem(
-                    title: movement['title'],
-                    amount: movement['amount'],
-                    date: movement['date'],
-                    category: movement['category'],
-                  ),
-                );
-              },
+                          endActionPane: ActionPane(
+                            motion: const DrawerMotion(),
+                            children: [
+                              SlidableAction(
+                                onPressed: (context) {
+                                  _deleteMovement(context, index);
+                                },
+                                backgroundColor: const Color(0xFFFE4A49),
+                                foregroundColor: Colors.white,
+                                icon: Icons.delete,
+                                label: 'Eliminar',
+                              ),
+                            ],
+                          ),
+
+                          child: _MovementItem(
+                            title: movement['title'],
+                            amount: movement['amount'],
+                            date: movement['date'],
+                            category: movement['category'],
+                          ),
+                        );
+                      },
+                    ),
             ),
           ],
         );
@@ -870,27 +1466,100 @@ class _InicioViewState extends State<InicioView> {
 
   /// --- METAS DE AHORRO ---
   Widget _buildSavingsGoals(BuildContext context) {
-    const double cardHeight = 130.0;
+    const double cardHeight = 170.0;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'Metas de Ahorro',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              'Metas de Ahorro',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Colors.purple.shade400, Colors.purple.shade600],
+                ),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.flag, size: 14, color: Colors.white),
+                  const SizedBox(width: 4),
+                  ValueListenableBuilder<List<Map<String, dynamic>>>(
+                    valueListenable: _goalsNotifier,
+                    builder: (context, goalsList, _) {
+                      return Text(
+                        '${goalsList.length}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 12),
         ValueListenableBuilder<List<Map<String, dynamic>>>(
           valueListenable: _goalsNotifier,
           builder: (context, goalsList, _) {
             if (goalsList.isEmpty) {
               return Container(
                 height: cardHeight,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Colors.purple.shade50,
+                      Colors.purple.shade100.withOpacity(0.3),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: Colors.purple.shade200,
+                    width: 2,
+                    style: BorderStyle.solid,
+                  ),
+                ),
                 alignment: Alignment.center,
-                child: Text(
-                  'No tienes metas',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.savings_outlined,
+                      size: 48,
+                      color: Colors.purple.shade300,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'No tienes metas de ahorro',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.purple.shade700,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Toca una meta para comenzar',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.purple.shade400,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
                 ),
               );
             }
@@ -919,6 +1588,7 @@ class _InicioViewState extends State<InicioView> {
                       index,
                       context,
                       cardHeight,
+                      goalsList.length,
                     ),
                   );
                 },
@@ -937,10 +1607,21 @@ class _InicioViewState extends State<InicioView> {
     double progress,
     int index,
     BuildContext context, [
-    double cardHeight = 130,
+    double cardHeight = 160,
+    int totalGoals = 1,
   ]) {
     final cardWidth = MediaQuery.of(context).size.width - 48;
     final percent = (progress * 100).clamp(0, 100).round();
+    final remaining = (total - current).clamp(0.0, double.infinity);
+
+    // Colores dinámicos según el progreso
+    final MaterialColor primaryColor = progress >= 1.0
+        ? Colors.green
+        : progress >= 0.7
+            ? Colors.blue
+            : progress >= 0.4
+                ? Colors.orange
+                : Colors.purple;
 
     return GestureDetector(
       onTap: () => _showGoalFormModal(context, index),
@@ -948,104 +1629,576 @@ class _InicioViewState extends State<InicioView> {
         width: cardWidth,
         height: cardHeight,
         decoration: BoxDecoration(
-          color: Colors.purple.shade50,
-          borderRadius: BorderRadius.circular(12),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              primaryColor.shade50,
+              Colors.white,
+              primaryColor.shade50.withOpacity(0.3),
+            ],
+            stops: const [0.0, 0.5, 1.0],
+          ),
+          borderRadius: BorderRadius.circular(20),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.03),
-              blurRadius: 8,
+              color: primaryColor.withOpacity(0.2),
+              blurRadius: 12,
               offset: const Offset(0, 4),
+              spreadRadius: 0,
             ),
           ],
         ),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: Stack(
           children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Expanded(
-                  child: Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.black87,
-                    ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.6),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    '$percent%',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.black87,
-                    ),
-                  ),
-                ),
-              ],
+            // Icono decorativo en el fondo
+            Positioned(
+              right: -10,
+              top: -10,
+              child: Icon(
+                Icons.savings,
+                size: 100,
+                color: primaryColor.withOpacity(0.05),
+              ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              'S/ ${current.toStringAsFixed(0)} / S/ ${total.toStringAsFixed(0)}',
-              style: TextStyle(color: Colors.grey[700], fontSize: 12.5),
-            ),
-            const SizedBox(height: 12),
-            // Custom rounded progress bar
-            ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: Stack(
+            // Contenido principal
+            Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Container(
-                    height: 12,
-                    color: Colors.blue.shade100.withOpacity(0.6),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: primaryColor.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Icon(
+                          progress >= 1.0
+                              ? Icons.check_circle
+                              : Icons.flag,
+                          color: primaryColor.shade700,
+                          size: 22,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              title,
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.bold,
+                                color: primaryColor.shade900,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Meta ${index + 1} de $totalGoals',
+                              style: TextStyle(
+                                color: Colors.grey.shade600,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 5,
+                        ),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [
+                              primaryColor.shade400,
+                              primaryColor.shade600,
+                            ],
+                          ),
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [
+                            BoxShadow(
+                              color: primaryColor.withOpacity(0.3),
+                              blurRadius: 4,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: Text(
+                          '$percent%',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                  FractionallySizedBox(
-                    widthFactor: progress,
+                  const SizedBox(height: 12),
+                  // Barra de progreso moderna
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
                     child: Container(
-                      height: 12,
+                      height: 14,
                       decoration: BoxDecoration(
-                        color: progress > 0.8
-                            ? Colors.orange
-                            : Colors.green.shade500,
-                        borderRadius: BorderRadius.circular(10),
+                        color: primaryColor.shade100.withOpacity(0.5),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Stack(
+                        children: [
+                          FractionallySizedBox(
+                            widthFactor: progress,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  colors: [
+                                    primaryColor.shade400,
+                                    primaryColor.shade600,
+                                  ],
+                                ),
+                                borderRadius: BorderRadius.circular(12),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: primaryColor.withOpacity(0.4),
+                                    blurRadius: 4,
+                                    offset: const Offset(0, 1),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
+                  const SizedBox(height: 10),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Ahorrado',
+                            style: TextStyle(
+                              color: Colors.grey.shade600,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          const SizedBox(height: 1),
+                          Text(
+                            'S/ ${current.toStringAsFixed(0)}',
+                            style: TextStyle(
+                              color: primaryColor.shade700,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade200,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          'de S/ ${total.toStringAsFixed(0)}',
+                          style: TextStyle(
+                            color: Colors.grey.shade700,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            'Falta',
+                            style: TextStyle(
+                              color: Colors.grey.shade600,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          const SizedBox(height: 1),
+                          Text(
+                            'S/ ${remaining.toStringAsFixed(0)}',
+                            style: TextStyle(
+                              color: Colors.grey.shade800,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  // Acciones: Retirar y Ahorrar (modernas)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      // Retirar
+                      ElevatedButton(
+                        onPressed: () async {
+                          final amountController = TextEditingController();
+                          final confirmed = await showModalBottomSheet<bool>(
+                            context: context,
+                            isScrollControlled: true,
+                            backgroundColor: Colors.transparent,
+                            builder: (ctx) {
+                              return Container(
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withOpacity(0.1),
+                                      blurRadius: 20,
+                                      offset: const Offset(0, -5),
+                                    ),
+                                  ],
+                                ),
+                                child: Padding(
+                                  padding: EdgeInsets.only(
+                                    left: 20,
+                                    right: 20,
+                                    top: 16,
+                                    bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+                                  ),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Center(
+                                        child: Container(
+                                          width: 40,
+                                          height: 4,
+                                          decoration: BoxDecoration(
+                                            color: Colors.grey.shade300,
+                                            borderRadius: BorderRadius.circular(2),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      Container(
+                                        width: double.infinity,
+                                        padding: const EdgeInsets.all(16),
+                                        decoration: const BoxDecoration(
+                                          gradient: LinearGradient(
+                                            colors: [Color(0xFFEF4444), Color(0xFFDC2626)],
+                                          ),
+                                          borderRadius: BorderRadius.all(Radius.circular(14)),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Container(
+                                              padding: const EdgeInsets.all(10),
+                                              decoration: BoxDecoration(
+                                                color: Colors.white.withOpacity(0.2),
+                                                borderRadius: BorderRadius.circular(10),
+                                              ),
+                                              child: const Icon(Icons.remove_circle_outline, color: Colors.white, size: 22),
+                                            ),
+                                            const SizedBox(width: 12),
+                                            const Expanded(
+                                              child: Text(
+                                                'Retirar Ahorro',
+                                                style: TextStyle(
+                                                  fontSize: 18,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.white,
+                                                ),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      TextField(
+                                        controller: amountController,
+                                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                        decoration: InputDecoration(
+                                          labelText: 'Monto a retirar',
+                                          prefixText: 'S/ ',
+                                          prefixIcon: Icon(Icons.attach_money, color: Colors.grey.shade600),
+                                          border: OutlineInputBorder(
+                                            borderRadius: BorderRadius.circular(14),
+                                            borderSide: BorderSide(color: Colors.grey.shade300),
+                                          ),
+                                          enabledBorder: OutlineInputBorder(
+                                            borderRadius: BorderRadius.circular(14),
+                                            borderSide: BorderSide(color: Colors.grey.shade300),
+                                          ),
+                                          focusedBorder: const OutlineInputBorder(
+                                            borderRadius: BorderRadius.all(Radius.circular(14)),
+                                            borderSide: BorderSide(color: Color(0xFFDC2626), width: 2),
+                                          ),
+                                          filled: true,
+                                          fillColor: Colors.grey.shade50,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.end,
+                                        children: [
+                                          TextButton(
+                                            onPressed: () => Navigator.pop(ctx, false),
+                                            child: Text('Cancelar', style: TextStyle(color: Colors.grey.shade600, fontWeight: FontWeight.w600)),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          ElevatedButton(
+                                            onPressed: () => Navigator.pop(ctx, true),
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor: const Color(0xFFDC2626),
+                                              foregroundColor: Colors.white,
+                                              elevation: 0,
+                                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                            ),
+                                            child: const Text('Retirar', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          );
+
+                          if (confirmed != true) return;
+
+                          final text = amountController.text.trim();
+                          final amount = double.tryParse(text.replaceAll(',', '.'));
+                          if (amount == null || amount <= 0) {
+                            if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ingresa un monto válido')));
+                            return;
+                          }
+
+                          final List<Map<String, dynamic>> currentGoals = List<Map<String, dynamic>>.from(_goalsNotifier.value);
+                          if (index < 0 || index >= currentGoals.length) return;
+                          final item = Map<String, dynamic>.from(currentGoals[index]);
+                          final double cur = _toDouble(item['current']);
+                          if (amount > cur) {
+                            if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No puedes retirar más de lo ahorrado')));
+                            return;
+                          }
+
+                          final newSaved = (cur - amount).clamp(0.0, double.infinity);
+                          // Backend update if id available
+                          try {
+                            final id = item['id']?.toString();
+                            if (id != null && id.isNotEmpty) {
+                              final goalService = GoalService();
+                              await goalService.updateGoal(id, {'currentAmount': newSaved});
+                            }
+                          } catch (e) {
+                            // Soft fail: keep UI responsive
+                          }
+
+                          // Update UI list and notifier
+                          item['current'] = newSaved;
+                          currentGoals[index] = item;
+                          _goalsNotifier.value = List<Map<String, dynamic>>.from(currentGoals);
+                          goals = currentGoals;
+                          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Retiro realizado')));
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFDC2626),
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                        child: const Text('Retirar'),
+                      ),
+                      const SizedBox(width: 8),
+                      // Ahorrar
+                      ElevatedButton(
+                        onPressed: () async {
+                          final amountController = TextEditingController();
+                          final confirmed = await showModalBottomSheet<bool>(
+                            context: context,
+                            isScrollControlled: true,
+                            backgroundColor: Colors.transparent,
+                            builder: (ctx) {
+                              return Container(
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withOpacity(0.1),
+                                      blurRadius: 20,
+                                      offset: const Offset(0, -5),
+                                    ),
+                                  ],
+                                ),
+                                child: Padding(
+                                  padding: EdgeInsets.only(
+                                    left: 20,
+                                    right: 20,
+                                    top: 16,
+                                    bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+                                  ),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Center(
+                                        child: Container(
+                                          width: 40,
+                                          height: 4,
+                                          decoration: BoxDecoration(
+                                            color: Colors.grey.shade300,
+                                            borderRadius: BorderRadius.circular(2),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      Container(
+                                        width: double.infinity,
+                                        padding: const EdgeInsets.all(16),
+                                        decoration: const BoxDecoration(
+                                          gradient: LinearGradient(
+                                            colors: [Color(0xFF10B981), Color(0xFF059669)],
+                                          ),
+                                          borderRadius: BorderRadius.all(Radius.circular(14)),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Container(
+                                              padding: const EdgeInsets.all(10),
+                                              decoration: BoxDecoration(
+                                                color: Colors.white.withOpacity(0.2),
+                                                borderRadius: BorderRadius.circular(10),
+                                              ),
+                                              child: const Icon(Icons.add_circle_outline, color: Colors.white, size: 22),
+                                            ),
+                                            const SizedBox(width: 12),
+                                            const Expanded(
+                                              child: Text(
+                                                'Agregar Ahorro',
+                                                style: TextStyle(
+                                                  fontSize: 18,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.white,
+                                                ),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(height: 16),
+                                      TextField(
+                                        controller: amountController,
+                                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                        decoration: InputDecoration(
+                                          labelText: 'Monto a ahorrar',
+                                          prefixText: 'S/ ',
+                                          prefixIcon: Icon(Icons.attach_money, color: Colors.grey.shade600),
+                                          border: OutlineInputBorder(
+                                            borderRadius: BorderRadius.circular(14),
+                                            borderSide: BorderSide(color: Colors.grey.shade300),
+                                          ),
+                                          enabledBorder: OutlineInputBorder(
+                                            borderRadius: BorderRadius.circular(14),
+                                            borderSide: BorderSide(color: Colors.grey.shade300),
+                                          ),
+                                          focusedBorder: const OutlineInputBorder(
+                                            borderRadius: BorderRadius.all(Radius.circular(14)),
+                                            borderSide: BorderSide(color: Color(0xFF059669), width: 2),
+                                          ),
+                                          filled: true,
+                                          fillColor: Colors.grey.shade50,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.end,
+                                        children: [
+                                          TextButton(
+                                            onPressed: () => Navigator.pop(ctx, false),
+                                            child: Text('Cancelar', style: TextStyle(color: Colors.grey.shade600, fontWeight: FontWeight.w600)),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          ElevatedButton(
+                                            onPressed: () => Navigator.pop(ctx, true),
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor: const Color(0xFF059669),
+                                              foregroundColor: Colors.white,
+                                              elevation: 0,
+                                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                            ),
+                                            child: const Text('Agregar', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          );
+
+                          if (confirmed != true) return;
+
+                          final text = amountController.text.trim();
+                          final amount = double.tryParse(text.replaceAll(',', '.'));
+                          if (amount == null || amount <= 0) {
+                            if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ingresa un monto válido')));
+                            return;
+                          }
+
+                          final List<Map<String, dynamic>> currentGoals = List<Map<String, dynamic>>.from(_goalsNotifier.value);
+                          if (index < 0 || index >= currentGoals.length) return;
+                          final item = Map<String, dynamic>.from(currentGoals[index]);
+                          final double cur = _toDouble(item['current']);
+                          final newSaved = cur + amount;
+
+                          try {
+                            final id = item['id']?.toString();
+                            if (id != null && id.isNotEmpty) {
+                              final goalService = GoalService();
+                              await goalService.updateGoal(id, {'currentAmount': newSaved});
+                            }
+                          } catch (e) {
+                            // ignore backend failure for UI responsiveness
+                          }
+
+                          item['current'] = newSaved;
+                          currentGoals[index] = item;
+                          _goalsNotifier.value = List<Map<String, dynamic>>.from(currentGoals);
+                          goals = currentGoals;
+                          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ahorro agregado')));
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green.shade600,
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                        child: const Text('Ahorrar'),
+                      ),
+                    ],
+                  ),
                 ],
               ),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Meta ${index + 1}',
-                  style: TextStyle(color: Colors.grey[600], fontSize: 12),
-                ),
-                Text(
-                  'Queda S/ ${(total - current).clamp(0.0, double.infinity).toStringAsFixed(2)}',
-                  style: TextStyle(
-                    color: Colors.grey[700],
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
             ),
           ],
         ),
@@ -1154,87 +2307,241 @@ class _InicioViewState extends State<InicioView> {
     showModalBottomSheet(
       isScrollControlled: true,
       context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
+      backgroundColor: Colors.transparent,
       builder: (context) {
         return StatefulBuilder(
           builder: (BuildContext context, StateSetter setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                left: 16,
-                right: 16,
-                bottom: MediaQuery.of(context).viewInsets.bottom + 20,
-                top: 20,
+            return Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(30),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 20,
+                    offset: const Offset(0, -5),
+                  ),
+                ],
               ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text(
-                    'Editar Movimiento',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 20),
-                  TextField(
-                    controller: montoController,
-                    decoration: InputDecoration(
-                      labelText: 'Monto',
-                      prefixText: 'S/ ',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 24,
+                  right: 24,
+                  bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+                  top: 24,
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Barra de arrastre
+                      Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade300,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
                       ),
-                      filled: true,
-                      fillColor: Colors.grey.shade50,
-                    ),
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
-                    ),
-                    autofocus: true,
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: descripcionController,
-                    decoration: InputDecoration(
-                      labelText: 'Descripción',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      filled: true,
-                      fillColor: Colors.grey.shade50,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  DropdownButtonFormField<String>(
-                    value: categoriaSeleccionada.isEmpty
-                        ? null
-                        : categoriaSeleccionada,
-                    decoration: InputDecoration(
-                      labelText: 'Categoría',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      filled: true,
-                      fillColor: Colors.grey.shade50,
-                    ),
-                    items: categorias
-                        .map(
-                          (c) => DropdownMenuItem<String>(
-                            value: (c['id'] ?? '').toString(),
-                            child: Text((c['name'] ?? 'Otros').toString()),
+                      const SizedBox(height: 20),
+                      // Título con ícono y gradiente
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          vertical: 12,
+                          horizontal: 20,
+                        ),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: isIncome
+                                ? [Colors.green.shade400, Colors.green.shade600]
+                                : [Colors.red.shade400, Colors.red.shade600],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
                           ),
-                        )
-                        .toList(),
-                    onChanged: (v) {
-                      setModalState(() {
-                        categoriaSeleccionada = v ?? '';
-                      });
-                    },
-                  ),
-                  const SizedBox(height: 24),
-                  SizedBox(
-                    width: double.infinity,
-                    child: CustomActionButton(
-                      onPressed: () async {
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [
+                            BoxShadow(
+                              color: (isIncome
+                                      ? Colors.green.shade400
+                                      : Colors.red.shade400)
+                                  .withOpacity(0.3),
+                              blurRadius: 8,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Icon(
+                                Icons.edit_rounded,
+                                color: Colors.white,
+                                size: 24,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Text(
+                              'Editar ${isIncome ? "Ingreso" : "Gasto"}',
+                              style: const TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      // Campo de Monto
+                      TextField(
+                        controller: montoController,
+                        decoration: InputDecoration(
+                          labelText: 'Monto',
+                          labelStyle: TextStyle(
+                            color: Colors.grey.shade700,
+                            fontWeight: FontWeight.w500,
+                          ),
+                          prefixText: 'S/ ',
+                          prefixStyle: TextStyle(
+                            color: isIncome ? Colors.green.shade700 : Colors.red.shade700,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 18,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(
+                              color: isIncome ? Colors.green.shade500 : Colors.red.shade500,
+                              width: 2,
+                            ),
+                          ),
+                          filled: true,
+                          fillColor: Colors.grey.shade50,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 16,
+                          ),
+                        ),
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        autofocus: true,
+                      ),
+                      const SizedBox(height: 16),
+                      // Campo de Descripción
+                      TextField(
+                        controller: descripcionController,
+                        decoration: InputDecoration(
+                          labelText: 'Descripción',
+                          labelStyle: TextStyle(
+                            color: Colors.grey.shade700,
+                            fontWeight: FontWeight.w500,
+                          ),
+                          prefixIcon: Icon(
+                            Icons.description_outlined,
+                            color: Colors.grey.shade600,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(
+                              color: isIncome ? Colors.green.shade500 : Colors.red.shade500,
+                              width: 2,
+                            ),
+                          ),
+                          filled: true,
+                          fillColor: Colors.grey.shade50,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 16,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      // Dropdown de Categoría
+                      DropdownButtonFormField<String>(
+                        value: categoriaSeleccionada.isEmpty
+                            ? null
+                            : categoriaSeleccionada,
+                        decoration: InputDecoration(
+                          labelText: 'Categoría',
+                          labelStyle: TextStyle(
+                            color: Colors.grey.shade700,
+                            fontWeight: FontWeight.w500,
+                          ),
+                          prefixIcon: Icon(
+                            Icons.category_outlined,
+                            color: Colors.grey.shade600,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(
+                              color: isIncome ? Colors.green.shade500 : Colors.red.shade500,
+                              width: 2,
+                            ),
+                          ),
+                          filled: true,
+                          fillColor: Colors.grey.shade50,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 16,
+                          ),
+                        ),
+                        items: categorias
+                            .map(
+                              (c) => DropdownMenuItem<String>(
+                                value: (c['id'] ?? '').toString(),
+                                child: Text((c['name'] ?? 'Otros').toString()),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (v) {
+                          setModalState(() {
+                            categoriaSeleccionada = v ?? '';
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 28),
+                      // Botón de acción moderno
+                      SizedBox(
+                        width: double.infinity,
+                        height: 56,
+                        child: ElevatedButton(
+                          onPressed: () async {
                         final newMonto =
                             double.tryParse(montoController.text) ?? 0.0;
                         if (newMonto <= 0 ||
@@ -1340,13 +2647,39 @@ class _InicioViewState extends State<InicioView> {
                             ),
                           );
                         }
-                      },
-                      backgroundColor: Colors.blue.shade500,
-                      icon: Icons.check,
-                      label: 'Guardar Cambios',
-                    ),
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue.shade500,
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            shadowColor: Colors.blue.shade500.withOpacity(0.4),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.check_circle_outline,
+                                size: 24,
+                              ),
+                              const SizedBox(width: 12),
+                              Text(
+                                'Guardar Cambios',
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             );
           },
@@ -1369,88 +2702,238 @@ class _InicioViewState extends State<InicioView> {
     showModalBottomSheet(
       isScrollControlled: true,
       context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
+      backgroundColor: Colors.transparent,
       builder: (context) {
         return StatefulBuilder(
           builder: (BuildContext context, StateSetter setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                left: 16,
-                right: 16,
-                bottom: MediaQuery.of(context).viewInsets.bottom + 20,
-                top: 20,
+            return Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(30),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 20,
+                    offset: const Offset(0, -5),
+                  ),
+                ],
               ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    goal['title'],
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: montoController,
-                    decoration: InputDecoration(
-                      labelText: 'Monto',
-                      prefixText: 'S/ ',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      filled: true,
-                      fillColor: Colors.grey.shade50,
-                    ),
-                    keyboardType: TextInputType.number,
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: descripcionController,
-                    decoration: InputDecoration(
-                      labelText: 'Descripción',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      filled: true,
-                      fillColor: Colors.grey.shade50,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  DropdownButtonFormField<String>(
-                    value: categoriaSeleccionada.isEmpty
-                        ? null
-                        : categoriaSeleccionada,
-                    decoration: InputDecoration(
-                      labelText: 'Categoría',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      filled: true,
-                      fillColor: Colors.grey.shade50,
-                    ),
-                    items: categorias
-                        .map(
-                          (c) => DropdownMenuItem<String>(
-                            value: (c['id'] ?? '').toString(),
-                            child: Text((c['name'] ?? 'Otros').toString()),
-                          ),
-                        )
-                        .toList(),
-                    onChanged: (v) {
-                      setModalState(() {
-                        categoriaSeleccionada = v ?? '';
-                      });
-                    },
-                  ),
-                  const SizedBox(height: 24),
-                  Row(
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 24,
+                  right: 24,
+                  bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+                  top: 24,
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      Expanded(
-                        child: CustomActionButton(
-                          onPressed: () {
+                      // Barra de arrastre
+                      Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade300,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      // Título con ícono y gradiente
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          vertical: 12,
+                          horizontal: 20,
+                        ),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [Colors.purple.shade400, Colors.purple.shade600],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.purple.shade400.withOpacity(0.3),
+                              blurRadius: 8,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Icon(
+                                Icons.savings_outlined,
+                                color: Colors.white,
+                                size: 24,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Flexible(
+                              child: Text(
+                                goal['title'],
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      // Campo de Monto
+                      TextField(
+                        controller: montoController,
+                        decoration: InputDecoration(
+                          labelText: 'Monto',
+                          labelStyle: TextStyle(
+                            color: Colors.grey.shade700,
+                            fontWeight: FontWeight.w500,
+                          ),
+                          prefixText: 'S/ ',
+                          prefixStyle: TextStyle(
+                            color: Colors.purple.shade700,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 18,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(
+                              color: Colors.purple.shade500,
+                              width: 2,
+                            ),
+                          ),
+                          filled: true,
+                          fillColor: Colors.grey.shade50,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 16,
+                          ),
+                        ),
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        keyboardType: TextInputType.number,
+                      ),
+                      const SizedBox(height: 16),
+                      // Campo de Descripción
+                      TextField(
+                        controller: descripcionController,
+                        decoration: InputDecoration(
+                          labelText: 'Descripción',
+                          labelStyle: TextStyle(
+                            color: Colors.grey.shade700,
+                            fontWeight: FontWeight.w500,
+                          ),
+                          prefixIcon: Icon(
+                            Icons.description_outlined,
+                            color: Colors.grey.shade600,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(
+                              color: Colors.purple.shade500,
+                              width: 2,
+                            ),
+                          ),
+                          filled: true,
+                          fillColor: Colors.grey.shade50,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 16,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      // Dropdown de Categoría
+                      DropdownButtonFormField<String>(
+                        value: categoriaSeleccionada.isEmpty
+                            ? null
+                            : categoriaSeleccionada,
+                        decoration: InputDecoration(
+                          labelText: 'Categoría',
+                          labelStyle: TextStyle(
+                            color: Colors.grey.shade700,
+                            fontWeight: FontWeight.w500,
+                          ),
+                          prefixIcon: Icon(
+                            Icons.category_outlined,
+                            color: Colors.grey.shade600,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(
+                              color: Colors.purple.shade500,
+                              width: 2,
+                            ),
+                          ),
+                          filled: true,
+                          fillColor: Colors.grey.shade50,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 16,
+                          ),
+                        ),
+                        items: categorias
+                            .map(
+                              (c) => DropdownMenuItem<String>(
+                                value: (c['id'] ?? '').toString(),
+                                child: Text((c['name'] ?? 'Otros').toString()),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (v) {
+                          setModalState(() {
+                            categoriaSeleccionada = v ?? '';
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 28),
+                      // Botones de acción
+                      Row(
+                        children: [
+                          Expanded(
+                            child: SizedBox(
+                              height: 56,
+                              child: ElevatedButton(
+                                onPressed: () {
                             final monto =
                                 double.tryParse(montoController.text) ?? 0.0;
                             // Update local state and notifiers without full rebuild
@@ -1481,16 +2964,39 @@ class _InicioViewState extends State<InicioView> {
                             _goalsNotifier.value =
                                 List<Map<String, dynamic>>.from(goals);
                             Navigator.pop(context);
-                          },
-                          backgroundColor: Colors.green.shade500,
-                          icon: Icons.add,
-                          label: 'Agregar Ahorro',
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: CustomActionButton(
-                          onPressed: () {
+                                },
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.green.shade500,
+                                  foregroundColor: Colors.white,
+                                  elevation: 0,
+                                  shadowColor: Colors.green.shade500.withOpacity(0.4),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                ),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.add, size: 20),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      'Agregar',
+                                      style: const TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: SizedBox(
+                              height: 56,
+                              child: ElevatedButton(
+                                onPressed: () {
                             final monto =
                                 double.tryParse(montoController.text) ?? 0.0;
                             goal['current'] = max(0, goal['current'] - monto);
@@ -1519,15 +3025,38 @@ class _InicioViewState extends State<InicioView> {
                             _goalsNotifier.value =
                                 List<Map<String, dynamic>>.from(goals);
                             Navigator.pop(context);
-                          },
-                          backgroundColor: Colors.red.shade500,
-                          icon: Icons.remove,
-                          label: 'Retirar Monto',
-                        ),
+                                },
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.red.shade500,
+                                  foregroundColor: Colors.white,
+                                  elevation: 0,
+                                  shadowColor: Colors.red.shade500.withOpacity(0.4),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                ),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.remove, size: 20),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      'Retirar',
+                                      style: const TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
-                ],
+                ),
               ),
             );
           },
@@ -1560,128 +3089,308 @@ class _InicioViewState extends State<InicioView> {
     showModalBottomSheet(
       isScrollControlled: true,
       context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
+      backgroundColor: Colors.transparent,
       builder: (context) {
         return StatefulBuilder(
           builder: (BuildContext context, StateSetter setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                left: 16,
-                right: 16,
-                bottom: MediaQuery.of(context).viewInsets.bottom + 20,
-                top: 20,
+            return Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(30),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 20,
+                    offset: const Offset(0, -5),
+                  ),
+                ],
               ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 24,
+                  right: 24,
+                  bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+                  top: 24,
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(
-                        isIncome ? Icons.arrow_upward : Icons.arrow_downward,
-                        color: isIncome ? Colors.green : Colors.red,
-                        size: 24,
+                    // Barra de arrastre
+                    Container(
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade300,
+                        borderRadius: BorderRadius.circular(2),
                       ),
-                      const SizedBox(width: 8),
-                      Text(
-                        isIncome ? 'Agregar Ingreso' : 'Agregar Gasto',
-                        style: const TextStyle(
-                          fontSize: 20,
+                    ),
+                    const SizedBox(height: 20),
+                    // Título con ícono y gradiente
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        vertical: 12,
+                        horizontal: 20,
+                      ),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: isIncome
+                              ? [Colors.green.shade400, Colors.green.shade600]
+                              : [Colors.red.shade400, Colors.red.shade600],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: [
+                          BoxShadow(
+                            color: (isIncome
+                                    ? Colors.green.shade400
+                                    : Colors.red.shade400)
+                                .withOpacity(0.3),
+                            blurRadius: 8,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Icon(
+                              isIncome
+                                  ? Icons.arrow_upward_rounded
+                                  : Icons.arrow_downward_rounded,
+                              color: Colors.white,
+                              size: 24,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            isIncome ? 'Agregar Ingreso' : 'Agregar Gasto',
+                            style: const TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    // Campo de Monto
+                    TextField(
+                      controller: montoController,
+                      decoration: InputDecoration(
+                        labelText: 'Monto',
+                        labelStyle: TextStyle(
+                          color: Colors.grey.shade700,
+                          fontWeight: FontWeight.w500,
+                        ),
+                        prefixText: 'S/ ',
+                        prefixStyle: TextStyle(
+                          color: isIncome ? Colors.green.shade700 : Colors.red.shade700,
                           fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                        ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide(color: Colors.grey.shade300),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide(color: Colors.grey.shade300),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide(
+                            color: isIncome ? Colors.green.shade500 : Colors.red.shade500,
+                            width: 2,
+                          ),
+                        ),
+                        filled: true,
+                        fillColor: Colors.grey.shade50,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 16,
                         ),
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-                  TextField(
-                    controller: montoController,
-                    decoration: InputDecoration(
-                      labelText: 'Monto',
-                      prefixText: 'S/ ',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
                       ),
-                      filled: true,
-                      fillColor: Colors.grey.shade50,
-                    ),
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
-                    ),
-                    autofocus: true,
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: descripcionController,
-                    decoration: InputDecoration(
-                      labelText: 'Descripción',
-                      hintText: 'Ej: Compra en supermercado',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
                       ),
-                      filled: true,
-                      fillColor: Colors.grey.shade50,
+                      autofocus: true,
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  DropdownButtonFormField<String>(
-                    value: categoriaSeleccionada.isEmpty
-                        ? null
-                        : categoriaSeleccionada,
-                    decoration: InputDecoration(
-                      labelText: 'Categoría',
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      filled: true,
-                      fillColor: Colors.grey.shade50,
-                    ),
-                    items: categorias
-                        .map(
-                          (c) => DropdownMenuItem<String>(
-                            value: (c['id'] ?? '').toString(),
-                            child: Text((c['name'] ?? 'Otros').toString()),
+                    const SizedBox(height: 16),
+                    // Campo de Descripción
+                    TextField(
+                      controller: descripcionController,
+                      decoration: InputDecoration(
+                        labelText: 'Descripción',
+                        labelStyle: TextStyle(
+                          color: Colors.grey.shade700,
+                          fontWeight: FontWeight.w500,
+                        ),
+                        hintText: 'Ej: Compra en supermercado',
+                        hintStyle: TextStyle(color: Colors.grey.shade400),
+                        prefixIcon: Icon(
+                          Icons.description_outlined,
+                          color: Colors.grey.shade600,
+                        ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide(color: Colors.grey.shade300),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide(color: Colors.grey.shade300),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide(
+                            color: isIncome ? Colors.green.shade500 : Colors.red.shade500,
+                            width: 2,
                           ),
-                        )
-                        .toList(),
-                    onChanged: (v) {
-                      setModalState(() {
-                        categoriaSeleccionada = v ?? '';
-                      });
-                    },
-                  ),
-                  const SizedBox(height: 24),
-                  SizedBox(
-                    width: double.infinity,
-                    child: CustomActionButton(
+                        ),
+                        filled: true,
+                        fillColor: Colors.grey.shade50,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 16,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    // Dropdown de Categoría
+                    DropdownButtonFormField<String>(
+                      value: categoriaSeleccionada.isEmpty
+                          ? null
+                          : categoriaSeleccionada,
+                      decoration: InputDecoration(
+                        labelText: 'Categoría',
+                        labelStyle: TextStyle(
+                          color: Colors.grey.shade700,
+                          fontWeight: FontWeight.w500,
+                        ),
+                        prefixIcon: Icon(
+                          Icons.category_outlined,
+                          color: Colors.grey.shade600,
+                        ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide(color: Colors.grey.shade300),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide(color: Colors.grey.shade300),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          borderSide: BorderSide(
+                            color: isIncome ? Colors.green.shade500 : Colors.red.shade500,
+                            width: 2,
+                          ),
+                        ),
+                        filled: true,
+                        fillColor: Colors.grey.shade50,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 16,
+                        ),
+                      ),
+                      items: categorias
+                          .map(
+                            (c) => DropdownMenuItem<String>(
+                              value: (c['id'] ?? '').toString(),
+                              child: Text((c['name'] ?? 'Otros').toString()),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (v) {
+                        setModalState(() {
+                          categoriaSeleccionada = v ?? '';
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    // Botón para crear nueva categoría
+                    TextButton.icon(
                       onPressed: () async {
-                        final monto =
-                            double.tryParse(montoController.text) ?? 0.0;
+                        await _showCreateCategoryDialog(
+                          context,
+                          isIncome: isIncome,
+                          onCategoryCreated: (newCategory) {
+                            setModalState(() {
+                              // Agregar la nueva categoría a la lista local
+                              categories.add(newCategory);
+                              // Seleccionarla automáticamente
+                              categoriaSeleccionada = 
+                                  (newCategory['id'] ?? '').toString();
+                            });
+                          },
+                        );
+                      },
+                      icon: Icon(
+                        Icons.add_circle_outline,
+                        size: 20,
+                        color: isIncome ? Colors.green.shade600 : Colors.red.shade600,
+                      ),
+                      label: Text(
+                        'Crear nueva categoría',
+                        style: TextStyle(
+                          color: isIncome ? Colors.green.shade600 : Colors.red.shade600,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    // Botón de acción moderno
+                    SizedBox(
+                      width: double.infinity,
+                      height: 56,
+                      child: ElevatedButton(
+                        onPressed: () async {
+                          final monto =
+                              double.tryParse(montoController.text) ?? 0.0;
 
-                        if (monto <= 0) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text(
-                                'Por favor ingresa un monto válido',
+                          if (monto <= 0) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  'Por favor ingresa un monto válido',
+                                ),
+                                backgroundColor: Colors.orange,
                               ),
-                              backgroundColor: Colors.orange,
-                            ),
-                          );
-                          return;
-                        }
+                            );
+                            return;
+                          }
 
-                        if (descripcionController.text.trim().isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text(
-                                'Por favor ingresa una descripción',
+                          if (descripcionController.text.trim().isEmpty) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  'Por favor ingresa una descripción',
+                                ),
+                                backgroundColor: Colors.orange,
                               ),
-                              backgroundColor: Colors.orange,
-                            ),
-                          );
-                          return;
-                        }
+                            );
+                            return;
+                          }
 
                         // llamar al backend para crear transacción (backend crea/encuentra cuenta principal)
                         try {
@@ -1703,12 +3412,35 @@ class _InicioViewState extends State<InicioView> {
                               : null;
 
                           // Update local state and notifiers without full rebuild
-                          if (newBalance != null)
+                          // Priorizar el balance del backend si está disponible
+                          if (newBalance != null) {
                             totalBalance = newBalance;
-                          else
-                            totalBalance += amount;
+                          } else {
+                            // Fallback: calcular localmente
+                            if (!isIncome) {
+                              monthlyBudget += monto;
+                              if (monthlyBudgetGoal > 0) {
+                                totalBalance = monthlyBudgetGoal - monthlyBudget;
+                              } else {
+                                totalBalance += amount;
+                              }
+                            } else {
+                              // Para ingresos
+                              if (monthlyBudgetGoal > 0) {
+                                // Si hay presupuesto mensual, los ingresos no afectan el balance
+                                // El balance es: presupuesto - gastos
+                                totalBalance = monthlyBudgetGoal - monthlyBudget;
+                              } else {
+                                // Sin presupuesto, sumar el ingreso
+                                totalBalance += amount;
+                              }
+                            }
+                          }
 
-                          if (!isIncome) monthlyBudget += monto;
+                          // Actualizar monthlyBudget solo si es gasto
+                          if (!isIncome) {
+                            monthlyBudget += monto;
+                          }
 
                           final rawDate = created != null
                               ? (created['occurredAt'] ?? created['createdAt'])
@@ -1756,8 +3488,8 @@ class _InicioViewState extends State<InicioView> {
                                 duration: const Duration(seconds: 2),
                               ),
                             );
-                          // refresh data from backend after creation (silent)
-                          if (mounted) await _loadHomeData(showLoading: false);
+                          // No hacer refresh inmediato para evitar parpadeo
+                          // El estado local ya está actualizado correctamente
                         } catch (e) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
@@ -1766,246 +3498,255 @@ class _InicioViewState extends State<InicioView> {
                             ),
                           );
                         }
-                      },
-                      backgroundColor: isIncome
-                          ? Colors.green.shade500
-                          : Colors.red.shade500,
-                      icon: Icons.check,
-                      label: isIncome ? 'Confirmar Ingreso' : 'Confirmar Gasto',
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: isIncome
+                              ? Colors.green.shade500
+                              : Colors.red.shade500,
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          shadowColor: (isIncome
+                                  ? Colors.green.shade500
+                                  : Colors.red.shade500)
+                              .withOpacity(0.4),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.check_circle_outline,
+                              size: 24,
+                            ),
+                            const SizedBox(width: 12),
+                            Text(
+                              isIncome ? 'Confirmar Ingreso' : 'Confirmar Gasto',
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 0.5,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            );
-          },
-        );
-      },
-    );
-  }
+            ),
+          );
+        },
+      );
+    },
+  );
+}
 
   String _formatDate() {
     final now = DateTime.now();
     return '${now.day}/${now.month}, ${now.hour}:${now.minute.toString().padLeft(2, '0')}';
   }
 
-  Widget _buildReports() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'Reportes - Personal',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 16),
-        Row(
-          children: [
-            Expanded(
-              child: InkWell(
-                onTap: () async {
-                  // Navegar a la pantalla del gráfico
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) =>
-                          const _ChartPage(title: 'Gastos de la semana'),
-                    ),
-                  );
-                },
-                borderRadius: BorderRadius.circular(4),
-                child: Card(
-                  child: Container(
-                    height: 150,
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Gastos de la semana',
-                          style: TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 12),
-                        // Small preview chart (simple custom painter)
-                        SizedBox(
-                          height: 80,
-                          child: CustomPaint(
-                            painter: _SmallSparklinePainter(),
-                            child: Container(),
-                          ),
-                        ),
-                      ],
+  /// --- MODAL PARA CREAR NUEVA CATEGORÍA ---
+  Future<void> _showCreateCategoryDialog(
+    BuildContext context, {
+    required bool isIncome,
+    required Function(Map<String, dynamic>) onCategoryCreated,
+  }) async {
+    final nameController = TextEditingController();
+    final descriptionController = TextEditingController();
+
+    await showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: (isIncome ? Colors.green : Colors.red).shade50,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(
+                  Icons.category_outlined,
+                  color: isIncome ? Colors.green.shade600 : Colors.red.shade600,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Text(
+                'Nueva Categoría',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                autofocus: true,
+                textCapitalization: TextCapitalization.words,
+                decoration: InputDecoration(
+                  labelText: 'Nombre de la categoría',
+                  hintText: 'Ej: Restaurantes, Salario, etc.',
+                  prefixIcon: Icon(
+                    Icons.label_outline,
+                    color: Colors.grey.shade600,
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(
+                      color: isIncome ? Colors.green.shade500 : Colors.red.shade500,
+                      width: 2,
                     ),
                   ),
                 ),
               ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: InkWell(
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => const _ChartPage(title: 'Por categorías'),
-                    ),
-                  );
-                },
-                borderRadius: BorderRadius.circular(4),
-                child: Card(
-                  child: Container(
-                    height: 150,
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Por categorías',
-                          style: TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 12),
-                        SizedBox(
-                          height: 80,
-                          child: CustomPaint(
-                            painter: _SmallBarPainter(),
-                            child: Container(),
-                          ),
-                        ),
-                      ],
+              const SizedBox(height: 16),
+              TextField(
+                controller: descriptionController,
+                maxLines: 2,
+                decoration: InputDecoration(
+                  labelText: 'Descripción (opcional)',
+                  hintText: 'Describe esta categoría...',
+                  prefixIcon: Icon(
+                    Icons.description_outlined,
+                    color: Colors.grey.shade600,
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(
+                      color: isIncome ? Colors.green.shade500 : Colors.red.shade500,
+                      width: 2,
                     ),
                   ),
                 ),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: (isIncome ? Colors.green : Colors.red).shade50,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.info_outline,
+                      size: 20,
+                      color: isIncome ? Colors.green.shade700 : Colors.red.shade700,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Tipo: ${isIncome ? "Ingreso" : "Gasto"}',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: isIncome ? Colors.green.shade700 : Colors.red.shade700,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: Text(
+                'Cancelar',
+                style: TextStyle(color: Colors.grey.shade600),
+              ),
+            ),
+            ElevatedButton.icon(
+              onPressed: () async {
+                final name = nameController.text.trim();
+                
+                if (name.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Por favor ingresa un nombre para la categoría'),
+                      backgroundColor: Colors.orange,
+                    ),
+                  );
+                  return;
+                }
+
+                // Crear la categoría en el backend
+                final newCategory = await CategoryService.createCategory(
+                  name: name,
+                  type: isIncome ? 'income' : 'expense',
+                  description: descriptionController.text.trim().isEmpty 
+                      ? null 
+                      : descriptionController.text.trim(),
+                );
+
+                if (newCategory != null) {
+                  Navigator.pop(dialogContext);
+                  
+                  // Llamar al callback con la nueva categoría
+                  onCategoryCreated(newCategory);
+                  
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('✓ Categoría "$name" creada correctamente'),
+                        backgroundColor: Colors.green,
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                  }
+                } else {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Error al crear la categoría. Intenta de nuevo.'),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                  }
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: isIncome ? Colors.green.shade500 : Colors.red.shade500,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 12,
+                ),
+              ),
+              icon: const Icon(Icons.add, size: 20),
+              label: const Text(
+                'Crear',
+                style: TextStyle(fontWeight: FontWeight.bold),
               ),
             ),
           ],
-        ),
-      ],
+        );
+      },
     );
   }
-
-  // Small preview painters
-}
-
-class _SmallSparklinePainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.purple.shade300
-      ..strokeWidth = 3
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
-
-    final points = [
-      Offset(0, size.height * 0.7),
-      Offset(size.width * 0.2, size.height * 0.5),
-      Offset(size.width * 0.4, size.height * 0.6),
-      Offset(size.width * 0.6, size.height * 0.35),
-      Offset(size.width * 0.8, size.height * 0.45),
-      Offset(size.width, size.height * 0.3),
-    ];
-
-    final path = Path();
-    for (var i = 0; i < points.length; i++) {
-      if (i == 0)
-        path.moveTo(points[i].dx, points[i].dy);
-      else
-        path.lineTo(points[i].dx, points[i].dy);
-    }
-    canvas.drawPath(path, paint);
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-class _SmallBarPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = Colors.teal.shade200;
-    final barWidth = size.width / 9;
-    final heights = [0.6, 0.4, 0.8, 0.3, 0.7];
-    for (var i = 0; i < heights.length; i++) {
-      final left = i * (barWidth * 1.6);
-      final top = size.height * (1 - heights[i]);
-      final rect = Rect.fromLTWH(left, top, barWidth, size.height - top);
-      final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(6));
-      canvas.drawRRect(rrect, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-class _ChartPage extends StatelessWidget {
-  final String title;
-  const _ChartPage({Key? key, required this.title}) : super(key: key);
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text(title), backgroundColor: Colors.deepPurple),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: Center(
-                child: SizedBox(
-                  width: double.infinity,
-                  child: CustomPaint(
-                    size: const Size(double.infinity, 300),
-                    painter: _LargeSparklinePainter(),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'Este es un gráfico de ejemplo. Aquí podrías mostrar tus datos reales por semana o por categorías.',
-              style: TextStyle(color: Colors.grey[700]),
-            ),
-            const SizedBox(height: 24),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _LargeSparklinePainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.deepPurple.shade400
-      ..strokeWidth = 4
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
-
-    final points = [
-      Offset(0, size.height * 0.7),
-      Offset(size.width * 0.15, size.height * 0.55),
-      Offset(size.width * 0.3, size.height * 0.6),
-      Offset(size.width * 0.45, size.height * 0.35),
-      Offset(size.width * 0.6, size.height * 0.5),
-      Offset(size.width * 0.75, size.height * 0.4),
-      Offset(size.width, size.height * 0.3),
-    ];
-
-    final path = Path();
-    for (var i = 0; i < points.length; i++) {
-      if (i == 0)
-        path.moveTo(points[i].dx, points[i].dy);
-      else
-        path.lineTo(points[i].dx, points[i].dy);
-    }
-    canvas.drawPath(path, paint);
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 // ============================================
