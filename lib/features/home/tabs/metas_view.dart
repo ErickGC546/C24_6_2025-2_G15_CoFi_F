@@ -112,9 +112,17 @@ class _MetasViewState extends State<MetasView> {
     });
     try {
       final data = await _service.getGoals();
+      // Filter out group goals so personal view shows only user-owned goals
+      final filtered = data.where((e) {
+        final hasGroup =
+            (e['groupId'] != null) ||
+            (e['group'] != null) ||
+            (e['group_id'] != null);
+        return !hasGroup;
+      }).toList();
       _safeSetState(() {
         _goals.clear();
-        _goals.addAll(data.map((e) => Goal.fromMap(e)).toList());
+        _goals.addAll(filtered.map((e) => Goal.fromMap(e)).toList());
       });
     } catch (e) {
       if (mounted) {
@@ -131,9 +139,20 @@ class _MetasViewState extends State<MetasView> {
 
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
+    final double bottomPad =
+        MediaQuery.of(context).viewPadding.bottom +
+        kBottomNavigationBarHeight +
+        24;
+    return RefreshIndicator(
+      onRefresh: _loadGoals,
+      child: SingleChildScrollView(
+        padding: EdgeInsets.only(
+          left: 16.0,
+          right: 16.0,
+          top: 16.0,
+          bottom: bottomPad,
+        ),
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -227,7 +246,10 @@ class _MetasViewState extends State<MetasView> {
                     const SizedBox(height: 2),
                     Text(
                       subtitle,
-                      style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontSize: 12,
+                      ),
                     ),
                   ],
                 ],
@@ -245,8 +267,9 @@ class _MetasViewState extends State<MetasView> {
             icon: Icons.flag_outlined,
             label: 'Meta más cercana',
             value: nearest?.title ?? '-',
-            subtitle:
-                nearest != null ? '${nearest.daysLeft} días restantes' : '-',
+            subtitle: nearest != null
+                ? '${nearest.daysLeft} días restantes'
+                : '-',
             accent: Colors.purple,
           ),
         ),
@@ -290,7 +313,9 @@ class _MetasViewState extends State<MetasView> {
           ),
           style: ElevatedButton.styleFrom(
             padding: const EdgeInsets.symmetric(vertical: 14),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
             elevation: 0,
             backgroundColor: Colors.transparent,
             shadowColor: Colors.transparent,
@@ -334,575 +359,663 @@ class _MetasViewState extends State<MetasView> {
     final MaterialColor primaryColor = progress >= 1.0
         ? Colors.green
         : progress >= 0.7
-            ? Colors.blue
-            : progress >= 0.4
-                ? Colors.orange
-                : Colors.purple;
+        ? Colors.blue
+        : progress >= 0.4
+        ? Colors.orange
+        : Colors.purple;
 
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            primaryColor.shade50,
-            Colors.white,
-            primaryColor.shade50.withOpacity(0.3),
-          ],
-          stops: const [0.0, 0.5, 1.0],
-        ),
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: primaryColor.withOpacity(0.15),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
+    return GestureDetector(
+      onTap: () => _showGoalActionsModal(context, g, index),
+      child: Container(
+        width: double.infinity,
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              primaryColor.shade50,
+              Colors.white,
+              primaryColor.shade50.withOpacity(0.3),
+            ],
+            stops: const [0.0, 0.5, 1.0],
           ),
-        ],
-      ),
-      child: Stack(
-        children: [
-          Positioned(
-            right: -10,
-            top: -10,
-            child: Icon(
-              Icons.savings,
-              size: 80,
-              color: primaryColor.withOpacity(0.05),
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: primaryColor.withOpacity(0.15),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(18),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(8),
+          ],
+        ),
+        child: Stack(
+          children: [
+            Positioned(
+              right: -10,
+              top: -10,
+              child: Icon(
+                Icons.savings,
+                size: 80,
+                color: primaryColor.withOpacity(0.05),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: primaryColor.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Icon(
+                          progress >= 1.0 ? Icons.check_circle : Icons.flag,
+                          color: primaryColor.shade700,
+                          size: 22,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              g.title,
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.bold,
+                                color: primaryColor.shade900,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              formattedDate,
+                              style: TextStyle(
+                                color: Colors.grey.shade600,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 5,
+                        ),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [
+                              primaryColor.shade400,
+                              primaryColor.shade600,
+                            ],
+                          ),
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [
+                            BoxShadow(
+                              color: primaryColor.withOpacity(0.3),
+                              blurRadius: 4,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: Text(
+                          '$percent%',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  // Barra de progreso
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      height: 14,
                       decoration: BoxDecoration(
-                        color: primaryColor.withOpacity(0.15),
+                        color: primaryColor.shade100.withOpacity(0.5),
                         borderRadius: BorderRadius.circular(12),
                       ),
-                      child: Icon(
-                        progress >= 1.0 ? Icons.check_circle : Icons.flag,
-                        color: primaryColor.shade700,
-                        size: 22,
+                      child: Stack(
+                        children: [
+                          FractionallySizedBox(
+                            widthFactor: progress,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  colors: [
+                                    primaryColor.shade400,
+                                    primaryColor.shade600,
+                                  ],
+                                ),
+                                borderRadius: BorderRadius.circular(12),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: primaryColor.withOpacity(0.4),
+                                    blurRadius: 4,
+                                    offset: const Offset(0, 1),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(width: 10),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        flex: 3,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Ahorrado',
+                              style: TextStyle(
+                                color: Colors.grey.shade600,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            const SizedBox(height: 1),
+                            Text(
+                              'S/ ${g.saved.toStringAsFixed(0)}',
+                              style: TextStyle(
+                                color: primaryColor.shade700,
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        flex: 2,
+                        child: Center(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 3,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade200,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: Text(
+                                'de S/ ${g.target.toStringAsFixed(0)}',
+                                style: TextStyle(
+                                  color: Colors.grey.shade700,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        flex: 3,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              'Falta',
+                              style: TextStyle(
+                                color: Colors.grey.shade600,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            const SizedBox(height: 1),
+                            Text(
+                              'S/ ${remaining.toStringAsFixed(0)}',
+                              style: TextStyle(
+                                color: Colors.grey.shade800,
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  // Acciones: usar Wrap dentro de un SizedBox para evitar overflow en pantallas pequeñas
+                  SizedBox(
+                    width: double.infinity,
+                    child: Wrap(
+                      alignment: WrapAlignment.end,
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        TextButton(
+                          onPressed: () => _showGoalModal(
+                            context,
+                            editingGoal: g,
+                            index: index,
+                          ),
+                          child: const Text('Editar'),
+                        ),
+                        TextButton(
+                          onPressed: () async {
+                            // Confirm delete
+                            final confirmed = await showDialog<bool>(
+                              context: context,
+                              builder: (ctx) => Dialog(
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Container(
+                                        width: double.infinity,
+                                        padding: const EdgeInsets.all(20),
+                                        decoration: const BoxDecoration(
+                                          gradient: LinearGradient(
+                                            colors: [
+                                              Color(0xFFEF4444),
+                                              Color(0xFFDC2626),
+                                            ],
+                                          ),
+                                          borderRadius: BorderRadius.only(
+                                            topLeft: Radius.circular(20),
+                                            topRight: Radius.circular(20),
+                                          ),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Container(
+                                              padding: const EdgeInsets.all(10),
+                                              decoration: BoxDecoration(
+                                                color: Colors.white.withOpacity(
+                                                  0.2,
+                                                ),
+                                                borderRadius:
+                                                    BorderRadius.circular(10),
+                                              ),
+                                              child: const Icon(
+                                                Icons.warning_amber_outlined,
+                                                color: Colors.white,
+                                                size: 22,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 12),
+                                            const Expanded(
+                                              child: Text(
+                                                'Eliminar meta',
+                                                style: TextStyle(
+                                                  fontSize: 18,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.white,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      Padding(
+                                        padding: const EdgeInsets.all(20),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: const [
+                                            Text(
+                                              'Esta acción no se puede deshacer.',
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.w600,
+                                                fontSize: 15,
+                                              ),
+                                            ),
+                                            SizedBox(height: 8),
+                                            Text(
+                                              'Se eliminará la meta y su progreso asociado. ¿Deseas continuar?',
+                                              style: TextStyle(
+                                                color: Colors.black54,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      Padding(
+                                        padding: const EdgeInsets.fromLTRB(
+                                          20,
+                                          0,
+                                          20,
+                                          20,
+                                        ),
+                                        child: Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.end,
+                                          children: [
+                                            TextButton(
+                                              onPressed: () =>
+                                                  Navigator.pop(ctx, false),
+                                              child: Text(
+                                                'Cancelar',
+                                                style: TextStyle(
+                                                  color: Colors.grey.shade700,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            ElevatedButton(
+                                              onPressed: () =>
+                                                  Navigator.pop(ctx, true),
+                                              style: ElevatedButton.styleFrom(
+                                                backgroundColor: const Color(
+                                                  0xFFDC2626,
+                                                ),
+                                                foregroundColor: Colors.white,
+                                                elevation: 0,
+                                                shape: RoundedRectangleBorder(
+                                                  borderRadius:
+                                                      BorderRadius.circular(12),
+                                                ),
+                                              ),
+                                              child: const Text(
+                                                'Eliminar',
+                                                style: TextStyle(
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 15,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+
+                            if (confirmed == true) {
+                              if (g.id == null) {
+                                _safeSetState(() {
+                                  _goals.removeAt(index);
+                                });
+                                return;
+                              }
+                              try {
+                                _safeSetState(() {
+                                  _isSaving = true;
+                                });
+                                await _service.deleteGoal(g.id!);
+                                _safeSetState(() {
+                                  _goals.removeAt(index);
+                                });
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('Meta eliminada'),
+                                    ),
+                                  );
+                                }
+                              } catch (e) {
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        'Error eliminando meta: ${e.toString()}',
+                                      ),
+                                    ),
+                                  );
+                                }
+                              } finally {
+                                _safeSetState(() {
+                                  _isSaving = false;
+                                });
+                              }
+                            }
+                          },
+                          child: const Text(
+                            'Eliminar',
+                            style: TextStyle(color: Colors.red),
+                          ),
+                        ),
+                        // NOTE: 'Retirar' and 'Ahorrar' buttons removed from list view.
+                        // The actions are available when tapping the goal card.
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showGoalActionsModal(BuildContext context, Goal g, int index) async {
+    final amountController = TextEditingController();
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.1),
+                blurRadius: 20,
+                offset: const Offset(0, -5),
+              ),
+            ],
+          ),
+          child: Padding(
+            padding: EdgeInsets.only(
+              left: 20,
+              right: 20,
+              top: 16,
+              bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                // Title + simple amount
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.savings_outlined),
+                    ),
+                    const SizedBox(width: 12),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             g.title,
-                            style: TextStyle(
-                              fontSize: 15,
+                            style: const TextStyle(
+                              fontSize: 16,
                               fontWeight: FontWeight.bold,
-                              color: primaryColor.shade900,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            formattedDate,
-                            style: TextStyle(
-                              color: Colors.grey.shade600,
-                              fontSize: 11,
                             ),
                           ),
+                          const SizedBox(height: 4),
+                          Text('Ahorrado: S/ ${g.saved.toStringAsFixed(0)}'),
                         ],
-                      ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 5,
-                      ),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [
-                            primaryColor.shade400,
-                            primaryColor.shade600,
-                          ],
-                        ),
-                        borderRadius: BorderRadius.circular(20),
-                        boxShadow: [
-                          BoxShadow(
-                            color: primaryColor.withOpacity(0.3),
-                            blurRadius: 4,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: Text(
-                        '$percent%',
-                        style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 12),
-                // Barra de progreso
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Container(
-                    height: 14,
-                    decoration: BoxDecoration(
-                      color: primaryColor.shade100.withOpacity(0.5),
-                      borderRadius: BorderRadius.circular(12),
+                TextField(
+                  controller: amountController,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: InputDecoration(
+                    labelText: 'Monto',
+                    prefixText: 'S/ ',
+                    prefixIcon: Icon(
+                      Icons.attach_money,
+                      color: Colors.grey.shade600,
                     ),
-                    child: Stack(
-                      children: [
-                        FractionallySizedBox(
-                          widthFactor: progress,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                colors: [
-                                  primaryColor.shade400,
-                                  primaryColor.shade600,
-                                ],
-                              ),
-                              borderRadius: BorderRadius.circular(12),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: primaryColor.withOpacity(0.4),
-                                  blurRadius: 4,
-                                  offset: const Offset(0, 1),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide(color: Colors.grey.shade300),
                     ),
+                    filled: true,
+                    fillColor: Colors.grey.shade50,
                   ),
                 ),
-                const SizedBox(height: 10),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Ahorrado',
-                          style: TextStyle(
-                            color: Colors.grey.shade600,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        const SizedBox(height: 1),
-                        Text(
-                          'S/ ${g.saved.toStringAsFixed(0)}',
-                          style: TextStyle(
-                            color: primaryColor.shade700,
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 3,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.grey.shade200,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        'de S/ ${g.target.toStringAsFixed(0)}',
-                        style: TextStyle(
-                          color: Colors.grey.shade700,
-                          fontSize: 10,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Text(
-                          'Falta',
-                          style: TextStyle(
-                            color: Colors.grey.shade600,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        const SizedBox(height: 1),
-                        Text(
-                          'S/ ${remaining.toStringAsFixed(0)}',
-                          style: TextStyle(
-                            color: Colors.grey.shade800,
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
                 const SizedBox(height: 12),
-                // Acciones
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
                     TextButton(
-                      onPressed: () =>
-                          _showGoalModal(context, editingGoal: g, index: index),
-                      child: const Text('Editar'),
-                    ),
-                    const SizedBox(width: 8),
-                    TextButton(
-                      onPressed: () async {
-                        // Confirm delete
-                        final confirmed = await showDialog<bool>(
-                          context: context,
-                          builder: (ctx) => Dialog(
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Container(
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Container(
-                                    width: double.infinity,
-                                    padding: const EdgeInsets.all(20),
-                                    decoration: const BoxDecoration(
-                                      gradient: LinearGradient(
-                                        colors: [Color(0xFFEF4444), Color(0xFFDC2626)],
-                                      ),
-                                      borderRadius: BorderRadius.only(
-                                        topLeft: Radius.circular(20),
-                                        topRight: Radius.circular(20),
-                                      ),
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        Container(
-                                          padding: const EdgeInsets.all(10),
-                                          decoration: BoxDecoration(
-                                            color: Colors.white.withOpacity(0.2),
-                                            borderRadius: BorderRadius.circular(10),
-                                          ),
-                                          child: const Icon(
-                                            Icons.warning_amber_outlined,
-                                            color: Colors.white,
-                                            size: 22,
-                                          ),
-                                        ),
-                                        const SizedBox(width: 12),
-                                        const Expanded(
-                                          child: Text(
-                                            'Eliminar meta',
-                                            style: TextStyle(
-                                              fontSize: 18,
-                                              fontWeight: FontWeight.bold,
-                                              color: Colors.white,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  Padding(
-                                    padding: const EdgeInsets.all(20),
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: const [
-                                        Text(
-                                          'Esta acción no se puede deshacer.',
-                                          style: TextStyle(
-                                            fontWeight: FontWeight.w600,
-                                            fontSize: 15,
-                                          ),
-                                        ),
-                                        SizedBox(height: 8),
-                                        Text(
-                                          'Se eliminará la meta y su progreso asociado. ¿Deseas continuar?',
-                                          style: TextStyle(color: Colors.black54),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  Padding(
-                                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                                    child: Row(
-                                      mainAxisAlignment: MainAxisAlignment.end,
-                                      children: [
-                                        TextButton(
-                                          onPressed: () => Navigator.pop(ctx, false),
-                                          child: Text(
-                                            'Cancelar',
-                                            style: TextStyle(
-                                              color: Colors.grey.shade700,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        ElevatedButton(
-                                          onPressed: () => Navigator.pop(ctx, true),
-                                          style: ElevatedButton.styleFrom(
-                                            backgroundColor: const Color(0xFFDC2626),
-                                            foregroundColor: Colors.white,
-                                            elevation: 0,
-                                            shape: RoundedRectangleBorder(
-                                              borderRadius: BorderRadius.circular(12),
-                                            ),
-                                          ),
-                                          child: const Text(
-                                            'Eliminar',
-                                            style: TextStyle(
-                                              fontWeight: FontWeight.bold,
-                                              fontSize: 15,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        );
-
-                        if (confirmed == true) {
-                          if (g.id == null) {
-                            _safeSetState(() {
-                              _goals.removeAt(index);
-                            });
-                            return;
-                          }
-                          try {
-                            _safeSetState(() {
-                              _isSaving = true;
-                            });
-                            await _service.deleteGoal(g.id!);
-                            _safeSetState(() {
-                              _goals.removeAt(index);
-                            });
-                            if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Meta eliminada')),
-                              );
-                            }
-                          } catch (e) {
-                            if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(
-                                    'Error eliminando meta: ${e.toString()}',
-                                  ),
-                                ),
-                              );
-                            }
-                          } finally {
-                            _safeSetState(() {
-                              _isSaving = false;
-                            });
-                          }
-                        }
-                      },
-                      child: const Text(
-                        'Eliminar',
-                        style: TextStyle(color: Colors.red),
+                      onPressed: () => Navigator.pop(ctx),
+                      child: Text(
+                        'Cancelar',
+                        style: TextStyle(
+                          color: Colors.grey.shade600,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     ),
                     const SizedBox(width: 8),
-                    // Retirar
                     ElevatedButton(
                       onPressed: () async {
-                        final amountController = TextEditingController();
-                        final confirmed = await showModalBottomSheet<bool>(
-                          context: context,
-                          isScrollControlled: true,
-                          backgroundColor: Colors.transparent,
-                          builder: (ctx) {
-                            return Container(
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withOpacity(0.1),
-                                    blurRadius: 20,
-                                    offset: const Offset(0, -5),
-                                  ),
-                                ],
-                              ),
-                              child: Padding(
-                                padding: EdgeInsets.only(
-                                  left: 20,
-                                  right: 20,
-                                  top: 16,
-                                  bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
-                                ),
-                                child: SingleChildScrollView(
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Center(
-                                        child: Container(
-                                          width: 40,
-                                          height: 4,
-                                          decoration: BoxDecoration(
-                                            color: Colors.grey.shade300,
-                                            borderRadius: BorderRadius.circular(2),
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(height: 16),
-                                      Container(
-                                        width: double.infinity,
-                                        padding: const EdgeInsets.all(16),
-                                        decoration: const BoxDecoration(
-                                          gradient: LinearGradient(
-                                            colors: [Color(0xFFEF4444), Color(0xFFDC2626)],
-                                          ),
-                                          borderRadius: BorderRadius.all(Radius.circular(14)),
-                                        ),
-                                      child: Row(
-                                        children: [
-                                          Container(
-                                            padding: const EdgeInsets.all(10),
-                                            decoration: BoxDecoration(
-                                              color: Colors.white.withOpacity(0.2),
-                                              borderRadius: BorderRadius.circular(10),
-                                            ),
-                                            child: const Icon(Icons.remove_circle_outline,
-                                                color: Colors.white, size: 22),
-                                          ),
-                                          const SizedBox(width: 12),
-                                          const Expanded(
-                                            child: Text(
-                                              'Retirar Ahorro',
-                                              style: TextStyle(
-                                                fontSize: 18,
-                                                fontWeight: FontWeight.bold,
-                                                color: Colors.white,
-                                              ),
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    const SizedBox(height: 16),
-                                    TextField(
-                                      controller: amountController,
-                                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                                      decoration: InputDecoration(
-                                        labelText: 'Monto a retirar',
-                                        prefixText: 'S/ ',
-                                        prefixIcon: Icon(Icons.attach_money, color: Colors.grey.shade600),
-                                        border: OutlineInputBorder(
-                                          borderRadius: BorderRadius.circular(14),
-                                          borderSide: BorderSide(color: Colors.grey.shade300),
-                                        ),
-                                        enabledBorder: OutlineInputBorder(
-                                          borderRadius: BorderRadius.circular(14),
-                                          borderSide: BorderSide(color: Colors.grey.shade300),
-                                        ),
-                                        focusedBorder: OutlineInputBorder(
-                                          borderRadius: BorderRadius.circular(14),
-                                          borderSide: const BorderSide(color: Color(0xFFDC2626), width: 2),
-                                        ),
-                                        filled: true,
-                                        fillColor: Colors.grey.shade50,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 12),
-                                    Row(
-                                      mainAxisAlignment: MainAxisAlignment.end,
-                                      children: [
-                                        TextButton(
-                                          onPressed: () => Navigator.pop(ctx, false),
-                                          child: Text(
-                                            'Cancelar',
-                                            style: TextStyle(
-                                              color: Colors.grey.shade600,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        ElevatedButton(
-                                          onPressed: () => Navigator.pop(ctx, true),
-                                          style: ElevatedButton.styleFrom(
-                                            backgroundColor: const Color(0xFFDC2626),
-                                            foregroundColor: Colors.white,
-                                            elevation: 0,
-                                            shape: RoundedRectangleBorder(
-                                              borderRadius: BorderRadius.circular(12),
-                                            ),
-                                          ),
-                                          child: const Text(
-                                            'Retirar',
-                                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                                ),
-                              ),
-                            );
-                          },
-                        );
-
-                        if (confirmed != true) return;
-
                         final text = amountController.text.trim();
-                        final amount = double.tryParse(text.replaceAll(',', '.'));
+                        final amount = double.tryParse(
+                          text.replaceAll(',', '.'),
+                        );
                         if (amount == null || amount <= 0) {
                           if (mounted)
                             ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Ingresa un monto válido')),
+                              const SnackBar(
+                                content: Text('Ingresa un monto válido'),
+                              ),
                             );
                           return;
                         }
-
                         final gIndex = index;
                         if (gIndex < 0 || gIndex >= _goals.length) return;
                         final g0 = _goals[gIndex];
-
-                        if (amount > g0.saved) {
+                        _safeSetState(() => _isSaving = true);
+                        try {
+                          final newSaved = (g0.saved + amount);
+                          if (g0.id != null) {
+                            await _service.updateGoal(g0.id!, {
+                              'currentAmount': newSaved,
+                            });
+                          }
+                          final updated = Goal(
+                            id: g0.id,
+                            title: g0.title,
+                            saved: newSaved,
+                            target: g0.target,
+                            targetDate: g0.targetDate,
+                          );
+                          _safeSetState(() {
+                            _goals[gIndex] = updated;
+                          });
                           if (mounted)
                             ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('No puedes retirar más de lo ahorrado')),
+                              const SnackBar(content: Text('Ahorro agregado')),
+                            );
+                          Navigator.pop(ctx);
+                        } catch (e) {
+                          if (mounted)
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  'Error al agregar ahorro: ${e.toString()}',
+                                ),
+                              ),
+                            );
+                        } finally {
+                          _safeSetState(() => _isSaving = false);
+                        }
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green.shade600,
+                        foregroundColor: Colors.white,
+                      ),
+                      child: const Text('Ahorrar'),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: () async {
+                        final text = amountController.text.trim();
+                        final amount = double.tryParse(
+                          text.replaceAll(',', '.'),
+                        );
+                        if (amount == null || amount <= 0) {
+                          if (mounted)
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Ingresa un monto válido'),
+                              ),
                             );
                           return;
                         }
-
-                        _safeSetState(() {
-                          _isSaving = true;
-                        });
-
+                        final gIndex = index;
+                        if (gIndex < 0 || gIndex >= _goals.length) return;
+                        final g0 = _goals[gIndex];
+                        if (amount > g0.saved) {
+                          if (mounted)
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  'No puedes retirar más de lo ahorrado',
+                                ),
+                              ),
+                            );
+                          return;
+                        }
+                        _safeSetState(() => _isSaving = true);
                         try {
-                          final newSaved = (g0.saved - amount).clamp(0.0, double.infinity);
+                          final newSaved = (g0.saved - amount).clamp(
+                            0.0,
+                            double.infinity,
+                          );
                           if (g0.id != null) {
                             await _service.updateGoal(g0.id!, {
                               'currentAmount': newSaved,
@@ -922,259 +1035,34 @@ class _MetasViewState extends State<MetasView> {
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(content: Text('Retiro realizado')),
                             );
-                        } catch (e) {
-                          if (mounted)
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('Error al retirar: $e')),
-                            );
-                        } finally {
-                          _safeSetState(() {
-                            _isSaving = false;
-                          });
-                        }
-                      },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFDC2626),
-                        foregroundColor: Colors.white,
-                        elevation: 0,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                      ),
-                      child: const Text('Retirar'),
-                    ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
-                      onPressed: () async {
-                        final amountController = TextEditingController();
-                        final confirmed = await showModalBottomSheet<bool>(
-                          context: context,
-                          isScrollControlled: true,
-                          backgroundColor: Colors.transparent,
-                          builder: (ctx) {
-                            return Container(
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius:
-                                    const BorderRadius.vertical(top: Radius.circular(24)),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withOpacity(0.1),
-                                    blurRadius: 20,
-                                    offset: const Offset(0, -5),
-                                  ),
-                                ],
-                              ),
-                              child: Padding(
-                                padding: EdgeInsets.only(
-                                  left: 20,
-                                  right: 20,
-                                  top: 16,
-                                  bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
-                                ),
-                                child: SingleChildScrollView(
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Center(
-                                        child: Container(
-                                          width: 40,
-                                          height: 4,
-                                          decoration: BoxDecoration(
-                                            color: Colors.grey.shade300,
-                                            borderRadius: BorderRadius.circular(2),
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(height: 16),
-                                      Container(
-                                        width: double.infinity,
-                                        padding: const EdgeInsets.all(16),
-                                        decoration: const BoxDecoration(
-                                          gradient: LinearGradient(
-                                            colors: [Color(0xFF10B981), Color(0xFF059669)],
-                                          ),
-                                          borderRadius: BorderRadius.all(Radius.circular(14)),
-                                        ),
-                                      child: Row(
-                                        children: [
-                                          Container(
-                                            padding: const EdgeInsets.all(10),
-                                            decoration: BoxDecoration(
-                                              color: Colors.white.withOpacity(0.2),
-                                              borderRadius: BorderRadius.circular(10),
-                                            ),
-                                            child: const Icon(Icons.add_circle_outline,
-                                                color: Colors.white, size: 22),
-                                          ),
-                                          const SizedBox(width: 12),
-                                          const Expanded(
-                                            child: Text(
-                                              'Agregar Ahorro',
-                                              style: TextStyle(
-                                                fontSize: 18,
-                                                fontWeight: FontWeight.bold,
-                                                color: Colors.white,
-                                              ),
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    const SizedBox(height: 16),
-                                    TextField(
-                                      controller: amountController,
-                                      keyboardType:
-                                          const TextInputType.numberWithOptions(
-                                            decimal: true,
-                                          ),
-                                      decoration: InputDecoration(
-                                        labelText: 'Monto a ahorrar',
-                                        prefixText: 'S/ ',
-                                        prefixIcon: Icon(Icons.attach_money,
-                                            color: Colors.grey.shade600),
-                                        border: OutlineInputBorder(
-                                          borderRadius: BorderRadius.circular(14),
-                                          borderSide:
-                                              BorderSide(color: Colors.grey.shade300),
-                                        ),
-                                        enabledBorder: OutlineInputBorder(
-                                          borderRadius: BorderRadius.circular(14),
-                                          borderSide:
-                                              BorderSide(color: Colors.grey.shade300),
-                                        ),
-                                        focusedBorder: OutlineInputBorder(
-                                          borderRadius: BorderRadius.circular(14),
-                                          borderSide: const BorderSide(
-                                              color: Color(0xFF059669), width: 2),
-                                        ),
-                                        filled: true,
-                                        fillColor: Colors.grey.shade50,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 12),
-                                    Row(
-                                      mainAxisAlignment: MainAxisAlignment.end,
-                                      children: [
-                                        TextButton(
-                                          onPressed: () => Navigator.pop(ctx, false),
-                                          child: Text(
-                                            'Cancelar',
-                                            style: TextStyle(
-                                              color: Colors.grey.shade600,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        ElevatedButton(
-                                          onPressed: () => Navigator.pop(ctx, true),
-                                          style: ElevatedButton.styleFrom(
-                                            backgroundColor: const Color(0xFF059669),
-                                            foregroundColor: Colors.white,
-                                            elevation: 0,
-                                            shape: RoundedRectangleBorder(
-                                              borderRadius: BorderRadius.circular(12),
-                                            ),
-                                          ),
-                                          child: const Text(
-                                            'Agregar',
-                                            style: TextStyle(
-                                                fontWeight: FontWeight.bold, fontSize: 15),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                                ),
-                              ),
-                            );
-                          },
-                        );
-
-                        if (confirmed != true) return;
-
-                        final text = amountController.text.trim();
-                        final amount = double.tryParse(text.replaceAll(',', '.'));
-                        if (amount == null || amount <= 0) {
-                          if (mounted)
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Ingresa un monto válido'),
-                              ),
-                            );
-                          return;
-                        }
-
-                        // find index and goal
-                        final gIndex = index;
-                        if (gIndex < 0 || gIndex >= _goals.length) return;
-                        final g0 = _goals[gIndex];
-
-                        _safeSetState(() {
-                          _isSaving = true;
-                        });
-
-                        try {
-                          final newSaved = (g0.saved) + amount;
-                          if (g0.id != null) {
-                            // Update backend (DB field: currentAmount)
-                            await _service.updateGoal(g0.id!, {
-                              'currentAmount': newSaved,
-                            });
-                          }
-
-                          // Update local model regardless
-                          final updated = Goal(
-                            id: g0.id,
-                            title: g0.title,
-                            saved: newSaved,
-                            target: g0.target,
-                            targetDate: g0.targetDate,
-                          );
-                          _safeSetState(() {
-                            _goals[gIndex] = updated;
-                          });
-
-                          if (mounted)
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Ahorro agregado')),
-                            );
+                          Navigator.pop(ctx);
                         } catch (e) {
                           if (mounted)
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
                                 content: Text(
-                                  'Error al agregar ahorro: ${e.toString()}',
+                                  'Error al retirar: ${e.toString()}',
                                 ),
                               ),
                             );
                         } finally {
-                          _safeSetState(() {
-                            _isSaving = false;
-                          });
+                          _safeSetState(() => _isSaving = false);
                         }
                       },
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green.shade600,
+                        backgroundColor: const Color(0xFFDC2626),
                         foregroundColor: Colors.white,
-                        elevation: 0,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
                       ),
-                      child: const Text('Ahorrar'),
+                      child: const Text('Retirar'),
                     ),
                   ],
                 ),
+                const SizedBox(height: 8),
               ],
             ),
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -1251,8 +1139,11 @@ class _MetasViewState extends State<MetasView> {
                             color: Colors.white.withOpacity(0.2),
                             borderRadius: BorderRadius.circular(10),
                           ),
-                          child: const Icon(Icons.savings_outlined,
-                              color: Colors.white, size: 22),
+                          child: const Icon(
+                            Icons.savings_outlined,
+                            color: Colors.white,
+                            size: 22,
+                          ),
                         ),
                         const SizedBox(width: 12),
                         Expanded(
@@ -1276,8 +1167,10 @@ class _MetasViewState extends State<MetasView> {
                     controller: _titleController,
                     decoration: InputDecoration(
                       labelText: 'Nombre de la meta',
-                      prefixIcon:
-                          Icon(Icons.flag_outlined, color: Colors.grey.shade600),
+                      prefixIcon: Icon(
+                        Icons.flag_outlined,
+                        color: Colors.grey.shade600,
+                      ),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(14),
                         borderSide: BorderSide(color: Colors.grey.shade300),
@@ -1288,8 +1181,10 @@ class _MetasViewState extends State<MetasView> {
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(14),
-                        borderSide:
-                            const BorderSide(color: Color(0xFF6B7FA8), width: 2),
+                        borderSide: const BorderSide(
+                          color: Color(0xFF6B7FA8),
+                          width: 2,
+                        ),
                       ),
                       filled: true,
                       fillColor: Colors.grey.shade50,
@@ -1300,8 +1195,10 @@ class _MetasViewState extends State<MetasView> {
                     controller: _targetController,
                     decoration: InputDecoration(
                       labelText: 'Monto objetivo',
-                      prefixIcon: Icon(Icons.attach_money,
-                          color: Colors.grey.shade600),
+                      prefixIcon: Icon(
+                        Icons.attach_money,
+                        color: Colors.grey.shade600,
+                      ),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(14),
                         borderSide: BorderSide(color: Colors.grey.shade300),
@@ -1312,8 +1209,10 @@ class _MetasViewState extends State<MetasView> {
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(14),
-                        borderSide:
-                            const BorderSide(color: Color(0xFF6B7FA8), width: 2),
+                        borderSide: const BorderSide(
+                          color: Color(0xFF6B7FA8),
+                          width: 2,
+                        ),
                       ),
                       filled: true,
                       fillColor: Colors.grey.shade50,
@@ -1335,8 +1234,9 @@ class _MetasViewState extends State<MetasView> {
                       if (picked != null) {
                         _safeSetState(() {
                           _selectedDate = picked;
-                          _dateController.text =
-                              DateFormat.yMMMMd().format(picked);
+                          _dateController.text = DateFormat.yMMMMd().format(
+                            picked,
+                          );
                         });
                       }
                     },
@@ -1345,22 +1245,24 @@ class _MetasViewState extends State<MetasView> {
                         controller: _dateController,
                         decoration: InputDecoration(
                           labelText: 'Fecha objetivo',
-                          prefixIcon: Icon(Icons.calendar_today_outlined,
-                              color: Colors.grey.shade600),
+                          prefixIcon: Icon(
+                            Icons.calendar_today_outlined,
+                            color: Colors.grey.shade600,
+                          ),
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(14),
-                            borderSide:
-                                BorderSide(color: Colors.grey.shade300),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
                           ),
                           enabledBorder: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(14),
-                            borderSide:
-                                BorderSide(color: Colors.grey.shade300),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
                           ),
                           focusedBorder: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(14),
                             borderSide: const BorderSide(
-                                color: Color(0xFF6B7FA8), width: 2),
+                              color: Color(0xFF6B7FA8),
+                              width: 2,
+                            ),
                           ),
                           filled: true,
                           fillColor: Colors.grey.shade50,
@@ -1389,7 +1291,8 @@ class _MetasViewState extends State<MetasView> {
                             ? null
                             : () async {
                                 final title = _titleController.text.trim();
-                                final targetText = _targetController.text.trim();
+                                final targetText = _targetController.text
+                                    .trim();
                                 final target = double.tryParse(
                                   targetText.replaceAll(',', '.'),
                                 );
@@ -1418,11 +1321,13 @@ class _MetasViewState extends State<MetasView> {
                                     final data = {
                                       'title': title,
                                       'targetAmount': target,
-                                      'targetDate':
-                                          _selectedDate!.toIso8601String(),
+                                      'targetDate': _selectedDate!
+                                          .toIso8601String(),
                                     };
                                     await _service.updateGoal(
-                                        editingGoal.id!, data);
+                                      editingGoal.id!,
+                                      data,
+                                    );
                                     // Update local model
                                     final updated = Goal(
                                       id: editingGoal.id,
@@ -1435,8 +1340,9 @@ class _MetasViewState extends State<MetasView> {
                                       _goals[index] = updated;
                                     });
                                     if (mounted)
-                                      ScaffoldMessenger.of(context)
-                                          .showSnackBar(
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
                                         const SnackBar(
                                           content: Text('Meta actualizada'),
                                         ),
@@ -1453,10 +1359,12 @@ class _MetasViewState extends State<MetasView> {
                                       _goals.add(newGoal);
                                     });
                                     if (mounted)
-                                      ScaffoldMessenger.of(context)
-                                          .showSnackBar(
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
                                         const SnackBar(
-                                            content: Text('Meta creada')),
+                                          content: Text('Meta creada'),
+                                        ),
                                       );
                                   }
                                   Navigator.pop(context);
@@ -1488,7 +1396,9 @@ class _MetasViewState extends State<MetasView> {
                               ? 'Guardar cambios'
                               : 'Crear Meta',
                           style: const TextStyle(
-                              fontWeight: FontWeight.bold, fontSize: 15),
+                            fontWeight: FontWeight.bold,
+                            fontSize: 15,
+                          ),
                         ),
                       ),
                     ],
