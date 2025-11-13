@@ -73,6 +73,84 @@ class AiService {
       String accumulatedResponse = '';
       int successfulResponses = 0;
 
+      // Helper para extraer texto de respuesta en distintas formas (map o string)
+      String _extractResponseText(dynamic parsed) {
+        try {
+          if (parsed == null) return '';
+          if (parsed is String) return parsed.trim();
+
+          if (parsed is Map && parsed.containsKey('response')) {
+            final r = parsed['response'];
+            if (r is String) return r.trim();
+            if (r is Map) {
+              final raw = r['raw'] ?? r['result'] ?? r;
+              if (raw is Map) {
+                final choices =
+                    raw['choices'] ?? raw['outputs'] ?? raw['result'];
+                if (choices is List && choices.isNotEmpty) {
+                  final first = choices[0];
+                  if (first is Map) {
+                    if (first.containsKey('message')) {
+                      final msg = first['message'];
+                      if (msg is Map && msg.containsKey('content')) {
+                        return (msg['content'] ?? '').toString().trim();
+                      }
+                    }
+                    if (first.containsKey('content')) {
+                      return (first['content'] ?? '').toString().trim();
+                    }
+                    if (first.containsKey('text')) {
+                      return (first['text'] ?? '').toString().trim();
+                    }
+                  }
+                }
+                if (raw.containsKey('message')) {
+                  final msg = raw['message'];
+                  if (msg is Map && msg.containsKey('content')) {
+                    return (msg['content'] ?? '').toString().trim();
+                  }
+                }
+              }
+            }
+          }
+
+          if (parsed is Map && parsed.containsKey('choices')) {
+            final choices = parsed['choices'];
+            if (choices is List && choices.isNotEmpty) {
+              final first = choices[0];
+              if (first is Map) {
+                if (first.containsKey('message')) {
+                  final msg = first['message'];
+                  if (msg is Map && msg.containsKey('content')) {
+                    return (msg['content'] ?? '').toString().trim();
+                  }
+                }
+                if (first.containsKey('text')) {
+                  return (first['text'] ?? '').toString().trim();
+                }
+              }
+            }
+          }
+
+          if (parsed is Map) {
+            if (parsed.containsKey('text'))
+              return (parsed['text'] ?? '').toString().trim();
+            if (parsed.containsKey('message')) {
+              final m = parsed['message'];
+              if (m is String) return m.trim();
+              if (m is Map && m.containsKey('content'))
+                return (m['content'] ?? '').toString().trim();
+            }
+            if (parsed.containsKey('output'))
+              return (parsed['output'] ?? '').toString().trim();
+          }
+
+          return '';
+        } catch (_) {
+          return '';
+        }
+      }
+
       for (var idx = 0; idx < parts.length; idx++) {
         final part = parts[idx];
         // Añadir instructivo conciso sólo al último fragmento (si aplica)
@@ -98,7 +176,7 @@ class AiService {
         if (response.statusCode == 200) {
           try {
             final data = jsonDecode(response.body);
-            final respText = (data['response'] as String?)?.trim() ?? '';
+            final respText = _extractResponseText(data);
             if (respText.isNotEmpty) {
               if (accumulatedResponse.isNotEmpty) {
                 accumulatedResponse =
@@ -210,7 +288,97 @@ class AiService {
           print('✅ Respuesta backend (status 200): ${response.body}');
           final data = jsonDecode(response.body);
           print('🔎 Parsed response JSON: $data');
-          var respText = (data["response"] as String?)?.trim() ?? '';
+          // Helper to extract text robustly from different backend shapes
+          String _extractResponseText(dynamic parsed) {
+            try {
+              if (parsed == null) return '';
+
+              // If it's already a string, return trimmed
+              if (parsed is String) return parsed.trim();
+
+              // If top-level has 'response' key either as String or Map
+              if (parsed is Map && parsed.containsKey('response')) {
+                final r = parsed['response'];
+                if (r is String) return r.trim();
+                // If 'response' is a map containing 'raw' with choice message
+                if (r is Map) {
+                  // Common shape: response.raw.choices[0].message.content
+                  final raw = r['raw'] ?? r['result'] ?? r;
+                  if (raw is Map) {
+                    final choices =
+                        raw['choices'] ?? raw['outputs'] ?? raw['result'];
+                    if (choices is List && choices.isNotEmpty) {
+                      final first = choices[0];
+                      if (first is Map) {
+                        // message -> content
+                        if (first.containsKey('message')) {
+                          final msg = first['message'];
+                          if (msg is Map && msg.containsKey('content')) {
+                            return (msg['content'] ?? '').toString().trim();
+                          }
+                        }
+                        // content directly
+                        if (first.containsKey('content')) {
+                          return (first['content'] ?? '').toString().trim();
+                        }
+                        // text field
+                        if (first.containsKey('text')) {
+                          return (first['text'] ?? '').toString().trim();
+                        }
+                      }
+                    }
+
+                    // Fallback: check raw.message.content
+                    if (raw.containsKey('message')) {
+                      final msg = raw['message'];
+                      if (msg is Map && msg.containsKey('content')) {
+                        return (msg['content'] ?? '').toString().trim();
+                      }
+                    }
+                  }
+                }
+              }
+
+              // Some responses may include choices at top-level
+              if (parsed is Map && parsed.containsKey('choices')) {
+                final choices = parsed['choices'];
+                if (choices is List && choices.isNotEmpty) {
+                  final first = choices[0];
+                  if (first is Map) {
+                    if (first.containsKey('message')) {
+                      final msg = first['message'];
+                      if (msg is Map && msg.containsKey('content')) {
+                        return (msg['content'] ?? '').toString().trim();
+                      }
+                    }
+                    if (first.containsKey('text')) {
+                      return (first['text'] ?? '').toString().trim();
+                    }
+                  }
+                }
+              }
+
+              // Generic fallbacks
+              if (parsed is Map) {
+                if (parsed.containsKey('text'))
+                  return (parsed['text'] ?? '').toString().trim();
+                if (parsed.containsKey('message')) {
+                  final m = parsed['message'];
+                  if (m is String) return m.trim();
+                  if (m is Map && m.containsKey('content'))
+                    return (m['content'] ?? '').toString().trim();
+                }
+                if (parsed.containsKey('output'))
+                  return (parsed['output'] ?? '').toString().trim();
+              }
+
+              return '';
+            } catch (_) {
+              return '';
+            }
+          }
+
+          var respText = _extractResponseText(data);
 
           // Si el backend devuelve el placeholder que significa "sin respuesta" o está vacío,
           // hacemos un reintento con una instrucción explícita de respuesta corta.
@@ -235,7 +403,7 @@ class AiService {
               );
               if (r2.statusCode == 200) {
                 final data2 = jsonDecode(r2.body);
-                respText = (data2['response'] as String?)?.trim() ?? '';
+                respText = _extractResponseText(data2);
                 print('🔁 Reintento backend (200): $respText');
               } else {
                 print('❌ Reintento fallido (${r2.statusCode}): ${r2.body}');
@@ -348,7 +516,10 @@ class AiService {
                 );
                 if (r2.statusCode == 200) {
                   final data2 = jsonDecode(r2.body);
-                  return data2['response'] ?? '🤔 No recibí respuesta de la IA';
+                  final extracted = _extractResponseText(data2);
+                  return extracted.isNotEmpty
+                      ? extracted
+                      : '🤔 No recibí respuesta de la IA';
                 } else {
                   print('❌ Reintento fallido (${r2.statusCode}): ${r2.body}');
                 }
