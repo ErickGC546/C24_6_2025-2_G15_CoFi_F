@@ -4,6 +4,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 class GroupService {
   final String baseUrl = "https://co-fi-web.vercel.app/api/groups";
+  // Separate base for savings endpoints (they live under /api/savings)
+  final String savingsBase = "https://co-fi-web.vercel.app/api/savings";
 
   Future<String?> _getToken() async {
     final user = FirebaseAuth.instance.currentUser;
@@ -221,7 +223,7 @@ class GroupService {
   }) async {
     final token = await _getToken();
     final response = await http.post(
-      Uri.parse("$baseUrl/savings"),
+      Uri.parse(savingsBase),
       headers: {
         "Authorization": "Bearer $token",
         "Content-Type": "application/json",
@@ -237,7 +239,27 @@ class GroupService {
     if (response.statusCode == 200 || response.statusCode == 201) {
       return jsonDecode(response.body);
     } else {
-      throw Exception("Error al crear meta: ${response.body}");
+      // Try to parse a friendly message from the response body
+      try {
+        final parsed = jsonDecode(response.body);
+        final message = parsed is Map
+            ? (parsed['error'] ??
+                  parsed['message'] ??
+                  parsed['detail'] ??
+                  response.body)
+            : response.body;
+        throw Exception(
+          'Error al crear meta: $message (status ${response.statusCode})',
+        );
+      } catch (_) {
+        // Fallback if body is not JSON or parsing fails
+        final bodyText = response.body.trim().isEmpty
+            ? 'HTTP ${response.statusCode}'
+            : response.body;
+        throw Exception(
+          'Error al crear meta: $bodyText (status ${response.statusCode})',
+        );
+      }
     }
   }
 
@@ -245,8 +267,8 @@ class GroupService {
   Future<List<dynamic>> getSavings({String? groupId}) async {
     final token = await _getToken();
     final uri = groupId != null
-        ? Uri.parse("$baseUrl/savings?groupId=$groupId")
-        : Uri.parse("$baseUrl/savings");
+        ? Uri.parse("$savingsBase?groupId=$groupId")
+        : Uri.parse(savingsBase);
     final response = await http.get(
       uri,
       headers: {"Authorization": "Bearer $token"},
@@ -263,7 +285,7 @@ class GroupService {
   Future<Map<String, dynamic>> getSavingById(String id) async {
     final token = await _getToken();
     final response = await http.get(
-      Uri.parse("$baseUrl/savings/$id"),
+      Uri.parse("$savingsBase/$id"),
       headers: {"Authorization": "Bearer $token"},
     );
 
@@ -274,6 +296,89 @@ class GroupService {
     }
   }
 
+  /// Obtener movimientos de una meta (intenta varias rutas comunes)
+  Future<List<dynamic>> getSavingMovements(
+    String savingId, {
+    String? groupId,
+  }) async {
+    final token = await _getToken();
+    final headers = {"Authorization": "Bearer $token"};
+
+    // Try a set of candidate URIs for movements retrieval
+    final candidates = <Uri>[];
+    // per-saving route
+    candidates.add(Uri.parse("$savingsBase/$savingId/movements"));
+    candidates.add(Uri.parse("$savingsBase/$savingId/transactions"));
+    candidates.add(Uri.parse("$savingsBase/$savingId/contributions"));
+
+    // global movements with query
+    // global movements with query (try different query param names the backend may expect)
+    candidates.add(
+      Uri.parse("https://co-fi-web.vercel.app/api/movements?goalId=$savingId"),
+    );
+    candidates.add(
+      Uri.parse(
+        "https://co-fi-web.vercel.app/api/movements?savingsGoalId=$savingId",
+      ),
+    );
+    candidates.add(
+      Uri.parse(
+        "https://co-fi-web.vercel.app/api/movements?savingId=$savingId",
+      ),
+    );
+
+    candidates.add(
+      Uri.parse(
+        "https://co-fi-web.vercel.app/api/contributions?goalId=$savingId",
+      ),
+    );
+    candidates.add(
+      Uri.parse(
+        "https://co-fi-web.vercel.app/api/contributions?savingsGoalId=$savingId",
+      ),
+    );
+    candidates.add(
+      Uri.parse(
+        "https://co-fi-web.vercel.app/api/contributions?savingId=$savingId",
+      ),
+    );
+
+    candidates.add(Uri.parse("$savingsBase/movements?goalId=$savingId"));
+    candidates.add(Uri.parse("$savingsBase/movements?savingsGoalId=$savingId"));
+    candidates.add(Uri.parse("$savingsBase/movements?savingId=$savingId"));
+
+    // if groupId provided, try group-scoped routes
+    if (groupId != null && groupId.trim().isNotEmpty) {
+      candidates.insert(
+        0,
+        Uri.parse("$baseUrl/$groupId/savings/$savingId/movements"),
+      );
+      candidates.insert(
+        1,
+        Uri.parse("$baseUrl/$groupId/savings/$savingId/transactions"),
+      );
+      candidates.insert(
+        2,
+        Uri.parse("$baseUrl/$groupId/savings/$savingId/contributions"),
+      );
+    }
+
+    for (final u in candidates) {
+      try {
+        final resp = await http.get(u, headers: headers);
+        if (resp.statusCode == 200) {
+          final parsed = jsonDecode(resp.body);
+          if (parsed is List) return parsed;
+          if (parsed is Map && parsed['data'] is List) return parsed['data'];
+          // some endpoints may return object with 'movements' key
+          if (parsed is Map && parsed['movements'] is List)
+            return parsed['movements'];
+        }
+      } catch (_) {}
+    }
+    return [];
+  }
+
   /// 🟠 Actualizar meta
   Future<Map<String, dynamic>> updateSaving({
     required String id,
@@ -281,7 +386,7 @@ class GroupService {
   }) async {
     final token = await _getToken();
     final response = await http.put(
-      Uri.parse("$baseUrl/savings/$id"),
+      Uri.parse("$savingsBase/$id"),
       headers: {
         "Authorization": "Bearer $token",
         "Content-Type": "application/json",
@@ -300,7 +405,7 @@ class GroupService {
   Future<void> deleteSaving(String id) async {
     final token = await _getToken();
     final response = await http.delete(
-      Uri.parse("$baseUrl/savings/$id"),
+      Uri.parse("$savingsBase/$id"),
       headers: {"Authorization": "Bearer $token"},
     );
 
@@ -315,23 +420,195 @@ class GroupService {
   Future<Map<String, dynamic>> createSavingMovement({
     required String savingId,
     required num amount,
+    String type = 'deposit', // 'deposit' or 'withdraw'
     String? note,
+    String? transactionId,
+    String? groupId,
   }) async {
     final token = await _getToken();
-    final response = await http.post(
-      Uri.parse("$baseUrl/savings/$savingId/movements"),
-      headers: {
-        "Authorization": "Bearer $token",
-        "Content-Type": "application/json",
-      },
-      body: jsonEncode({"amount": amount, if (note != null) "note": note}),
-    );
+    // Prepare common headers and body
+    final headers = {
+      "Authorization": "Bearer $token",
+      "Content-Type": "application/json",
+    };
+    // canonical body using backend's expected field names
+    final canonicalBody = {
+      "goalId": savingId,
+      "amount": amount,
+      "type": type,
+      if (note != null) "note": note,
+      if (transactionId != null) "transactionId": transactionId,
+      if (groupId != null) "groupId": groupId,
+    };
+    final body = jsonEncode(canonicalBody);
 
-    if (response.statusCode == 200 || response.statusCode == 201) {
-      return jsonDecode(response.body);
-    } else {
-      throw Exception("Error al crear movimiento: ${response.body}");
+    // Try a list of candidate endpoints/approaches until one succeeds.
+    // If this saving belongs to a group, try group-scoped endpoints first.
+    // We also keep a list of attempted URIs to report back in case of failure.
+    final candidates = <Future<http.Response> Function()>[];
+    final attemptedUris = <String>[];
+
+    if (groupId != null && groupId.trim().isNotEmpty) {
+      candidates.add(() async {
+        final u = "$baseUrl/$groupId/savings/$savingId/movements";
+        attemptedUris.add(u);
+        // try canonical body
+        return await http.post(Uri.parse(u), headers: headers, body: body);
+      });
+      candidates.add(() async {
+        final u = "$baseUrl/$groupId/savings/$savingId/transactions";
+        attemptedUris.add(u);
+        return await http.post(Uri.parse(u), headers: headers, body: body);
+      });
+      candidates.add(() async {
+        final u = "$baseUrl/$groupId/savings/$savingId/contributions";
+        attemptedUris.add(u);
+        return await http.post(Uri.parse(u), headers: headers, body: body);
+      });
     }
+
+    // Most likely: /api/savings/{id}/movements
+    candidates.add(() async {
+      final u = "$savingsBase/$savingId/movements";
+      attemptedUris.add(u);
+      return await http.post(Uri.parse(u), headers: headers, body: body);
+    });
+
+    // Alternative: global movements endpoint with savingId in payload
+    // global movements endpoint (send canonical 'goalId' as well)
+    candidates.add(() async {
+      final u = "$savingsBase/movements";
+      attemptedUris.add(u);
+      return await http.post(Uri.parse(u), headers: headers, body: body);
+    });
+
+    // Other common alternatives
+    candidates.add(() async {
+      final u = "$savingsBase/$savingId/transactions";
+      attemptedUris.add(u);
+      return await http.post(Uri.parse(u), headers: headers, body: body);
+    });
+    candidates.add(() async {
+      final u = "$savingsBase/$savingId/contributions";
+      attemptedUris.add(u);
+      return await http.post(Uri.parse(u), headers: headers, body: body);
+    });
+
+    // As a last attempt, try PUT to the per-saving path (some APIs use PUT for idempotent updates)
+    candidates.add(() async {
+      final u = "$savingsBase/$savingId/movements";
+      attemptedUris.add(u + " (PUT)");
+      return await http.put(Uri.parse(u), headers: headers, body: body);
+    });
+
+    // Additional diagnostic candidates:
+    // - Group-scoped generic movements endpoint with savingId in body
+    if (groupId != null && groupId.trim().isNotEmpty) {
+      candidates.add(() async {
+        final u = "$baseUrl/$groupId/movements";
+        attemptedUris.add(u);
+        return await http.post(Uri.parse(u), headers: headers, body: body);
+      });
+
+      // Try group-level movements root
+      candidates.add(() async {
+        final u = "$baseUrl/movements";
+        attemptedUris.add(u);
+        return await http.post(Uri.parse(u), headers: headers, body: body);
+      });
+    }
+
+    // Try common global endpoints
+    candidates.add(() async {
+      final u = "$baseUrl/movements";
+      attemptedUris.add(u);
+      return await http.post(Uri.parse(u), headers: headers, body: body);
+    });
+
+    candidates.add(() async {
+      final u = "https://co-fi-web.vercel.app/api/movements";
+      attemptedUris.add(u);
+      return await http.post(Uri.parse(u), headers: headers, body: body);
+    });
+
+    candidates.add(() async {
+      final u = "https://co-fi-web.vercel.app/api/contributions";
+      attemptedUris.add(u);
+      return await http.post(Uri.parse(u), headers: headers, body: body);
+    });
+
+    // Try PATCH to per-saving movements path (some APIs use PATCH)
+    candidates.add(() async {
+      final u = "$savingsBase/$savingId/movements";
+      attemptedUris.add(u + " (PATCH)");
+      return await http.patch(Uri.parse(u), headers: headers, body: body);
+    });
+
+    http.Response? lastResponse;
+    for (final attempt in candidates) {
+      try {
+        final resp = await attempt();
+        lastResponse = resp;
+        if (resp.statusCode == 200 ||
+            resp.statusCode == 201 ||
+            resp.statusCode == 204) {
+          if (resp.body.trim().isEmpty) return {};
+          try {
+            return jsonDecode(resp.body);
+          } catch (_) {
+            return {"message": resp.body};
+          }
+        }
+
+        // If we got 405 Method Not Allowed or 404 Not Found, try next candidate
+        if (resp.statusCode == 405 || resp.statusCode == 404) continue;
+
+        // For other non-success statuses, try to parse a helpful message and throw
+        try {
+          final parsed = jsonDecode(resp.body);
+          final message = parsed is Map
+              ? (parsed['error'] ??
+                    parsed['message'] ??
+                    parsed['detail'] ??
+                    resp.body)
+              : resp.body;
+          throw Exception(
+            'Error al crear movimiento: $message (status ${resp.statusCode})',
+          );
+        } catch (_) {
+          final bodyText = resp.body.trim().isEmpty
+              ? 'HTTP ${resp.statusCode}'
+              : resp.body;
+          throw Exception(
+            'Error al crear movimiento: $bodyText (status ${resp.statusCode})',
+          );
+        }
+      } catch (e) {
+        // If the exception was thrown by the http client itself, record and try next
+        // but if it's our parsed Exception, rethrow so UI shows helpful detail.
+        if (e is Exception &&
+            e.toString().contains('Error al crear movimiento:'))
+          rethrow;
+        // otherwise continue to next candidate
+      }
+    }
+
+    // If we exhausted candidates, provide the last response status/body if available
+    if (lastResponse != null) {
+      final resp = lastResponse;
+      final bodyText = resp.body.trim().isEmpty
+          ? 'HTTP ${resp.statusCode}'
+          : resp.body;
+      final attemptedText = attemptedUris.isEmpty
+          ? 'N/A'
+          : attemptedUris.join(' | ');
+      throw Exception(
+        'Error al crear movimiento: $bodyText (status ${resp.statusCode}). Endpoints intentados: $attemptedText',
+      );
+    }
+
+    // Unknown failure
+    throw Exception('Error al crear movimiento: falla desconocida');
   }
 
   /// �🟣 Listar miembros de un grupo

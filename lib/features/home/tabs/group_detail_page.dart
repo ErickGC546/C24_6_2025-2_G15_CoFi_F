@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../../core/services/group_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 
 class GroupDetailPage extends StatefulWidget {
   final String? groupId;
@@ -25,10 +26,329 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
   bool _isAdminOrOwner = false;
   String? _myRole;
 
+  double _parseToDouble(dynamic v) {
+    if (v == null) return 0.0;
+    if (v is num) return v.toDouble();
+    if (v is String) {
+      final s = v.replaceAll(',', '.').trim();
+      final n = num.tryParse(s);
+      return n?.toDouble() ?? 0.0;
+    }
+    return 0.0;
+  }
+
   @override
   void initState() {
     super.initState();
-    _loadDetail();
+    // Load group details once after the first frame so the UI shows data immediately
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadDetail();
+    });
+  }
+
+  Future<void> _showGroupSavingActionsModal(
+    String savingId,
+    String title,
+    double currentAmount,
+    int index,
+  ) async {
+    final amountController = TextEditingController();
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.1),
+                blurRadius: 20,
+                offset: const Offset(0, -5),
+              ),
+            ],
+          ),
+          child: Padding(
+            padding: EdgeInsets.only(
+              left: 20,
+              right: 20,
+              top: 16,
+              bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.savings_outlined),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Ahorrado: S/ ${currentAmount.toStringAsFixed(0)}',
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: amountController,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: InputDecoration(
+                    labelText: 'Monto',
+                    prefixText: 'S/ ',
+                    prefixIcon: Icon(
+                      Icons.attach_money,
+                      color: Colors.grey.shade600,
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    ),
+                    filled: true,
+                    fillColor: Colors.grey.shade50,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: Text(
+                        'Cancelar',
+                        style: TextStyle(
+                          color: Colors.grey.shade600,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: () async {
+                        final text = amountController.text.trim();
+                        final amt = double.tryParse(text.replaceAll(',', '.'));
+                        if (amt == null || amt <= 0) {
+                          if (mounted)
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Ingresa un monto válido'),
+                              ),
+                            );
+                          return;
+                        }
+                        Navigator.pop(ctx);
+                        setState(() => _isLoading = true);
+                        try {
+                          // Create a movement in the backend (deposit)
+                          final resp = await _groupService.createSavingMovement(
+                            savingId: savingId,
+                            amount: amt,
+                            type: 'deposit',
+                            note: null,
+                            groupId: widget.groupId,
+                          );
+
+                          // backend may return updatedGoal with new currentAmount
+                          final updatedGoal =
+                              resp['updatedGoal'] ??
+                              resp['goal'] ??
+                              resp['savingsGoal'];
+                          double newSaved;
+                          if (updatedGoal != null) {
+                            newSaved = _parseToDouble(
+                              updatedGoal['currentAmount'] ??
+                                  updatedGoal['current_amount'] ??
+                                  updatedGoal['current'] ??
+                                  0,
+                            );
+                          } else {
+                            newSaved = (currentAmount + amt);
+                          }
+
+                          // update local list
+                          if (index >= 0 && index < _savings.length) {
+                            final old = Map<String, dynamic>.from(
+                              _savings[index],
+                            );
+                            old['currentAmount'] = newSaved;
+                            // also append movement locally if backend returned it
+                            final mv =
+                                resp['movement'] ??
+                                resp['movementResult'] ??
+                                resp['created'] ??
+                                null;
+                            if (mv != null) {
+                              final moves = List.from(old['movements'] ?? [])
+                                ..insert(0, mv);
+                              old['movements'] = moves;
+                            }
+                            setState(() => _savings[index] = old);
+                          }
+                          if (mounted)
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Ahorro agregado')),
+                            );
+                        } catch (e) {
+                          if (mounted)
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  'Error al ahorrar: ${e.toString()}',
+                                ),
+                              ),
+                            );
+                        } finally {
+                          if (mounted) setState(() => _isLoading = false);
+                        }
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green.shade600,
+                        foregroundColor: Colors.white,
+                      ),
+                      child: const Text('Ahorrar'),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: () async {
+                        final text = amountController.text.trim();
+                        final amt = double.tryParse(text.replaceAll(',', '.'));
+                        if (amt == null || amt <= 0) {
+                          if (mounted)
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Ingresa un monto válido'),
+                              ),
+                            );
+                          return;
+                        }
+                        if (amt > currentAmount) {
+                          if (mounted)
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  'No puedes retirar más de lo ahorrado',
+                                ),
+                              ),
+                            );
+                          return;
+                        }
+                        Navigator.pop(ctx);
+                        setState(() => _isLoading = true);
+                        try {
+                          // Create a withdrawal movement in backend
+                          final resp = await _groupService.createSavingMovement(
+                            savingId: savingId,
+                            amount: amt,
+                            type: 'withdraw',
+                            note: null,
+                            groupId: widget.groupId,
+                          );
+
+                          final updatedGoal =
+                              resp['updatedGoal'] ??
+                              resp['goal'] ??
+                              resp['savingsGoal'];
+                          double newSaved;
+                          if (updatedGoal != null) {
+                            newSaved = _parseToDouble(
+                              updatedGoal['currentAmount'] ??
+                                  updatedGoal['current_amount'] ??
+                                  updatedGoal['current'] ??
+                                  0,
+                            );
+                          } else {
+                            newSaved = (currentAmount - amt).clamp(
+                              0.0,
+                              double.infinity,
+                            );
+                          }
+
+                          // update local list
+                          if (index >= 0 && index < _savings.length) {
+                            final old = Map<String, dynamic>.from(
+                              _savings[index],
+                            );
+                            old['currentAmount'] = newSaved;
+                            final mv =
+                                resp['movement'] ??
+                                resp['movementResult'] ??
+                                resp['created'] ??
+                                null;
+                            if (mv != null) {
+                              final moves = List.from(old['movements'] ?? [])
+                                ..insert(0, mv);
+                              old['movements'] = moves;
+                            }
+                            setState(() => _savings[index] = old);
+                          }
+                          if (mounted)
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Retiro realizado')),
+                            );
+                        } catch (e) {
+                          if (mounted)
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  'Error al retirar: ${e.toString()}',
+                                ),
+                              ),
+                            );
+                        } finally {
+                          if (mounted) setState(() => _isLoading = false);
+                        }
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFDC2626),
+                        foregroundColor: Colors.white,
+                      ),
+                      child: const Text('Retirar'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _loadDetail() async {
@@ -130,8 +450,23 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
           data['transactions'] ??
           data['movementsList'] ??
           [];
+      var normalizedMoves = moves is List ? moves : [];
+
+      // If the per-saving GET didn't include movements, try the generic movements endpoint
+      if (normalizedMoves.isEmpty && widget.groupId != null) {
+        try {
+          final fallback = await _groupService.getSavingMovements(
+            savingId,
+            groupId: widget.groupId,
+          );
+          if (fallback.isNotEmpty) normalizedMoves = fallback;
+        } catch (_) {
+          // ignore fallback errors; keep UI responsive
+        }
+      }
+
       final merged = Map<String, dynamic>.from(_savings[index])..addAll(data);
-      merged['movements'] = moves is List ? moves : [];
+      merged['movements'] = normalizedMoves;
       merged['_detailed'] = true;
       if (!mounted) return;
       setState(() {
@@ -148,14 +483,14 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
   Future<void> _showCreateSavingDialog() async {
     final titleCtrl = TextEditingController();
     final amountCtrl = TextEditingController();
+    final dateCtrl = TextEditingController();
     final formKey = GlobalKey<FormState>();
+    DateTime? selectedDate;
 
     final result = await showDialog<bool?>(
       context: context,
       builder: (_) => Dialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         child: Container(
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(20),
@@ -216,7 +551,10 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                         decoration: InputDecoration(
                           labelText: 'Título',
                           hintText: 'Ej. Viaje a la playa',
-                          prefixIcon: Icon(Icons.label_outlined, color: Colors.grey.shade600),
+                          prefixIcon: Icon(
+                            Icons.label_outlined,
+                            color: Colors.grey.shade600,
+                          ),
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(14),
                             borderSide: BorderSide(color: Colors.grey.shade300),
@@ -227,7 +565,10 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                           ),
                           focusedBorder: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(14),
-                            borderSide: const BorderSide(color: Color(0xFF6B7FA8), width: 2),
+                            borderSide: const BorderSide(
+                              color: Color(0xFF6B7FA8),
+                              width: 2,
+                            ),
                           ),
                           filled: true,
                           fillColor: Colors.grey.shade50,
@@ -237,12 +578,69 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                             : null,
                       ),
                       const SizedBox(height: 16),
+                      // Fecha objetivo
+                      GestureDetector(
+                        onTap: () async {
+                          final now = DateTime.now();
+                          final picked = await showDatePicker(
+                            context: context,
+                            initialDate: now,
+                            firstDate: now,
+                            lastDate: DateTime(now.year + 10),
+                          );
+                          if (picked != null) {
+                            selectedDate = picked;
+                            dateCtrl.text = DateFormat.yMMMd().format(picked);
+                          }
+                        },
+                        child: AbsorbPointer(
+                          child: TextFormField(
+                            controller: dateCtrl,
+                            decoration: InputDecoration(
+                              labelText: 'Fecha objetivo',
+                              hintText: 'Selecciona una fecha',
+                              prefixIcon: Icon(
+                                Icons.calendar_today_outlined,
+                                color: Colors.grey.shade600,
+                              ),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: BorderSide(
+                                  color: Colors.grey.shade300,
+                                ),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: BorderSide(
+                                  color: Colors.grey.shade300,
+                                ),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: const BorderSide(
+                                  color: Color(0xFF6B7FA8),
+                                  width: 2,
+                                ),
+                              ),
+                              filled: true,
+                              fillColor: Colors.grey.shade50,
+                            ),
+                            validator: (v) => (v == null || v.trim().isEmpty)
+                                ? 'Selecciona una fecha'
+                                : null,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
                       TextFormField(
                         controller: amountCtrl,
                         decoration: InputDecoration(
                           labelText: 'Monto objetivo',
                           hintText: 'Ej. 5000',
-                          prefixIcon: Icon(Icons.attach_money, color: Colors.grey.shade600),
+                          prefixIcon: Icon(
+                            Icons.attach_money,
+                            color: Colors.grey.shade600,
+                          ),
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(14),
                             borderSide: BorderSide(color: Colors.grey.shade300),
@@ -253,27 +651,39 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                           ),
                           focusedBorder: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(14),
-                            borderSide: const BorderSide(color: Color(0xFF6B7FA8), width: 2),
+                            borderSide: const BorderSide(
+                              color: Color(0xFF6B7FA8),
+                              width: 2,
+                            ),
                           ),
                           filled: true,
                           fillColor: Colors.grey.shade50,
                         ),
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
                         inputFormatters: [
-                          FilteringTextInputFormatter.allow(RegExp(r'[0-9\.,]')),
+                          FilteringTextInputFormatter.allow(
+                            RegExp(r'[0-9\.,]'),
+                          ),
                           TextInputFormatter.withFunction((oldValue, newValue) {
                             final text = newValue.text;
                             if (text.isEmpty) return newValue;
-                            if (!RegExp(r'^[0-9]*[\.,]?[0-9]*$').hasMatch(text)) {
+                            if (!RegExp(
+                              r'^[0-9]*[\.,]?[0-9]*$',
+                            ).hasMatch(text)) {
                               return oldValue;
                             }
-                            final sepMatches = RegExp(r'[\.,]').allMatches(text).length;
+                            final sepMatches = RegExp(
+                              r'[\.,]',
+                            ).allMatches(text).length;
                             if (sepMatches > 1) return oldValue;
                             return newValue;
                           }),
                         ],
                         validator: (v) {
-                          if (v == null || v.trim().isEmpty) return 'Ingresa un monto';
+                          if (v == null || v.trim().isEmpty)
+                            return 'Ingresa un monto';
                           final n = num.tryParse(v.replaceAll(',', '.'));
                           if (n == null || n <= 0) return 'Monto inválido';
                           return null;
@@ -292,7 +702,10 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                     TextButton(
                       onPressed: () => Navigator.of(context).pop(false),
                       style: TextButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 12,
+                        ),
                       ),
                       child: Text(
                         'Cancelar',
@@ -312,7 +725,10 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF6B7FA8),
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 12,
+                        ),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12),
                         ),
@@ -320,7 +736,10 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                       ),
                       child: const Text(
                         'Crear',
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                        ),
                       ),
                     ),
                   ],
@@ -335,6 +754,7 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
     if (result != true) return;
     final title = titleCtrl.text.trim();
     final amount = num.tryParse(amountCtrl.text.replaceAll(',', '.'));
+    final targetDate = selectedDate?.toIso8601String();
     if (amount == null || amount <= 0) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -348,6 +768,7 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
       await _groupService.createSaving(
         title: title,
         targetAmount: amount,
+        targetDate: targetDate,
         groupId: widget.groupId,
       );
       ScaffoldMessenger.of(
@@ -355,227 +776,18 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
       ).showSnackBar(const SnackBar(content: Text('Meta creada')));
       await _loadSavings();
     } catch (e) {
+      // Clean up exception message for user (remove 'Exception: ' prefix if present)
+      String msg;
+      try {
+        msg = e is Exception
+            ? e.toString().replaceFirst('Exception: ', '')
+            : e.toString();
+      } catch (_) {
+        msg = e.toString();
+      }
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('Error creando meta: $e')));
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  Future<void> _addIncomeToSaving(String savingId) async {
-    final amountCtrl = TextEditingController();
-    final formKey = GlobalKey<FormState>();
-    final noteCtrl = TextEditingController();
-
-    final ok = await showDialog<bool?>(
-      context: context,
-      builder: (_) => Dialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-        ),
-        child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
-            color: Colors.white,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Header con gradiente verde suave
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      const Color(0xFF10B981).withOpacity(0.9),
-                      const Color(0xFF059669).withOpacity(0.9),
-                    ],
-                  ),
-                  borderRadius: const BorderRadius.only(
-                    topLeft: Radius.circular(20),
-                    topRight: Radius.circular(20),
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.2),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: const Icon(
-                        Icons.add_circle_outline,
-                        color: Colors.white,
-                        size: 22,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    const Text(
-                      'Agregar Ingreso',
-                      style: TextStyle(
-                        fontSize: 19,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              // Contenido
-              Padding(
-                padding: const EdgeInsets.all(20),
-                child: Form(
-                  key: formKey,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      TextFormField(
-                        controller: amountCtrl,
-                        decoration: InputDecoration(
-                          labelText: 'Monto',
-                          hintText: 'Ej. 500',
-                          prefixIcon: Icon(Icons.attach_money, color: Colors.grey.shade600),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(14),
-                            borderSide: BorderSide(color: Colors.grey.shade300),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(14),
-                            borderSide: BorderSide(color: Colors.grey.shade300),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(14),
-                            borderSide: const BorderSide(color: Color(0xFF059669), width: 2),
-                          ),
-                          filled: true,
-                          fillColor: Colors.grey.shade50,
-                        ),
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                        inputFormatters: [
-                          FilteringTextInputFormatter.allow(RegExp(r'[0-9\.,]')),
-                          TextInputFormatter.withFunction((oldValue, newValue) {
-                            final text = newValue.text;
-                            if (text.isEmpty) return newValue;
-                            if (!RegExp(r'^[0-9]*[\.,]?[0-9]*$').hasMatch(text)) {
-                              return oldValue;
-                            }
-                            final sepMatches = RegExp(r'[\.,]').allMatches(text).length;
-                            if (sepMatches > 1) return oldValue;
-                            return newValue;
-                          }),
-                        ],
-                        validator: (v) {
-                          if (v == null || v.trim().isEmpty) return 'Ingresa un monto';
-                          final n = num.tryParse(v.replaceAll(',', '.'));
-                          if (n == null || n <= 0) return 'Monto inválido';
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 16),
-                      TextFormField(
-                        controller: noteCtrl,
-                        decoration: InputDecoration(
-                          labelText: 'Nota (opcional)',
-                          hintText: 'Agrega un comentario...',
-                          prefixIcon: Icon(Icons.note_outlined, color: Colors.grey.shade600),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(14),
-                            borderSide: BorderSide(color: Colors.grey.shade300),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(14),
-                            borderSide: BorderSide(color: Colors.grey.shade300),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(14),
-                            borderSide: const BorderSide(color: Color(0xFF059669), width: 2),
-                          ),
-                          filled: true,
-                          fillColor: Colors.grey.shade50,
-                        ),
-                        maxLines: 2,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              // Botones
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    TextButton(
-                      onPressed: () => Navigator.of(context).pop(false),
-                      style: TextButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                      ),
-                      child: Text(
-                        'Cancelar',
-                        style: TextStyle(
-                          color: Colors.grey.shade600,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 15,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
-                      onPressed: () {
-                        if (formKey.currentState?.validate() ?? false)
-                          Navigator.of(context).pop(true);
-                      },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF059669),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        elevation: 0,
-                      ),
-                      child: const Text(
-                        'Agregar',
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-
-    if (ok != true) return;
-    final amount = num.tryParse(amountCtrl.text.replaceAll(',', '.'));
-    if (amount == null || amount <= 0) {
-      if (mounted)
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Ingresa un monto válido')),
-        );
-      return;
-    }
-    final note = noteCtrl.text.trim();
-    setState(() => _isLoading = true);
-    try {
-      await _groupService.createSavingMovement(
-        savingId: savingId,
-        amount: amount,
-        note: note.isEmpty ? null : note,
-      );
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Ingreso agregado')));
-      await _loadSavings();
-    } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Error agregando ingreso: $e')));
+      ).showSnackBar(SnackBar(content: Text('Error creando meta: $msg')));
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -658,7 +870,11 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                         color: Colors.white.withOpacity(0.2),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: const Icon(Icons.person_add_outlined, color: Colors.white, size: 22),
+                      child: const Icon(
+                        Icons.person_add_outlined,
+                        color: Colors.white,
+                        size: 22,
+                      ),
                     ),
                     const SizedBox(width: 12),
                     const Text(
@@ -695,7 +911,10 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                         decoration: InputDecoration(
                           labelText: 'Email',
                           hintText: 'ejemplo@correo.com',
-                          prefixIcon: Icon(Icons.email_outlined, color: Colors.grey.shade600),
+                          prefixIcon: Icon(
+                            Icons.email_outlined,
+                            color: Colors.grey.shade600,
+                          ),
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(14),
                             borderSide: BorderSide(color: Colors.grey.shade300),
@@ -706,13 +925,17 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                           ),
                           focusedBorder: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(14),
-                            borderSide: const BorderSide(color: Color(0xFF6B7FA8), width: 2),
+                            borderSide: const BorderSide(
+                              color: Color(0xFF6B7FA8),
+                              width: 2,
+                            ),
                           ),
                           filled: true,
                           fillColor: Colors.grey.shade50,
                         ),
                         validator: (v) {
-                          if (v == null || v.trim().isEmpty) return 'Ingresa un email';
+                          if (v == null || v.trim().isEmpty)
+                            return 'Ingresa un email';
                           if (!v.contains('@')) return 'Email inválido';
                           return null;
                         },
@@ -730,7 +953,10 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                     TextButton(
                       onPressed: () => Navigator.of(context).pop(null),
                       style: TextButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 12,
+                        ),
                       ),
                       child: Text(
                         'Cancelar',
@@ -745,13 +971,18 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                     ElevatedButton(
                       onPressed: () {
                         if (formKey.currentState?.validate() ?? false) {
-                          Navigator.of(context).pop(emailController.text.trim());
+                          Navigator.of(
+                            context,
+                          ).pop(emailController.text.trim());
                         }
                       },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF6B7FA8),
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 12,
+                        ),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12),
                         ),
@@ -759,7 +990,10 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                       ),
                       child: const Text(
                         'Invitar',
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                        ),
                       ),
                     ),
                   ],
@@ -913,7 +1147,9 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                         borderRadius: BorderRadius.circular(10),
                       ),
                       child: Icon(
-                        isOwner ? Icons.delete_forever_outlined : Icons.exit_to_app_outlined,
+                        isOwner
+                            ? Icons.delete_forever_outlined
+                            : Icons.exit_to_app_outlined,
                         color: Colors.white,
                         size: 22,
                       ),
@@ -937,9 +1173,13 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Icon(
-                      isOwner ? Icons.warning_amber_rounded : Icons.info_outline,
+                      isOwner
+                          ? Icons.warning_amber_rounded
+                          : Icons.info_outline,
                       size: 56,
-                      color: isOwner ? Colors.orange.shade400 : Colors.blue.shade400,
+                      color: isOwner
+                          ? Colors.orange.shade400
+                          : Colors.blue.shade400,
                     ),
                     const SizedBox(height: 16),
                     Text(
@@ -1074,9 +1314,11 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
     required MaterialColor primaryColor,
     required String? savingId,
     required List contributions,
+    Map<String, dynamic>? savingData,
+    int? savingIndex,
   }) {
     return Container(
-      height: 180,
+      constraints: const BoxConstraints(minHeight: 140),
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
@@ -1099,6 +1341,7 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
       ),
       padding: const EdgeInsets.all(16),
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
@@ -1117,19 +1360,92 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.bold,
-                    color: primaryColor.shade900,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: primaryColor.shade900,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    // Show target/goal date if provided in savingData
+                    if (savingData != null) ...[
+                      const SizedBox(height: 4),
+                      Builder(
+                        builder: (ctx) {
+                          String dateText = '';
+                          try {
+                            final raw =
+                                savingData['targetDate'] ??
+                                savingData['target_date'] ??
+                                savingData['goalDate'] ??
+                                savingData['date'];
+                            if (raw != null) {
+                              DateTime? dt;
+                              if (raw is String)
+                                dt = DateTime.tryParse(raw);
+                              else if (raw is int)
+                                dt = DateTime.fromMillisecondsSinceEpoch(raw);
+                              else if (raw is double)
+                                dt = DateTime.fromMillisecondsSinceEpoch(
+                                  raw.toInt(),
+                                );
+                              if (dt != null)
+                                dateText = DateFormat.yMMMd().format(dt);
+                              else
+                                dateText = raw.toString();
+                            }
+                          } catch (_) {}
+                          return dateText.isNotEmpty
+                              ? Text(
+                                  dateText,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey.shade600,
+                                  ),
+                                )
+                              : const SizedBox.shrink();
+                        },
+                      ),
+                    ],
+                  ],
                 ),
               ),
               GestureDetector(
-                onTap: () => _showMovementsDialog(title, contributions),
+                onTap: () async {
+                  // If we don't have detailed movements, load them first so the dialog shows data
+                  if (savingId != null &&
+                      savingIndex != null &&
+                      (savingData == null || savingData['_detailed'] != true)) {
+                    await _loadSavingDetail(savingId, savingIndex);
+                  }
+                  // ignore: unnecessary_type_check
+                  List updated = contributions is List
+                      ? List.from(contributions)
+                      : [];
+                  if (savingIndex != null &&
+                      savingIndex >= 0 &&
+                      savingIndex < _savings.length) {
+                    final s = _savings[savingIndex];
+                    final moves =
+                        s['movements'] ??
+                        s['contributions'] ??
+                        s['transactions'] ??
+                        [];
+                    if (moves is List && moves.isNotEmpty) updated = moves;
+                  }
+                  await _showMovementsDialog(
+                    title,
+                    updated,
+                    savingId: savingId,
+                  );
+                },
                 child: Container(
                   padding: const EdgeInsets.all(6),
                   decoration: BoxDecoration(
@@ -1143,6 +1459,7 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                   ),
                 ),
               ),
+              const SizedBox(width: 8),
             ],
           ),
           const SizedBox(height: 12),
@@ -1154,10 +1471,7 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                 children: [
                   Text(
                     'Acumulado',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.grey.shade600,
-                    ),
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
                   ),
                   const SizedBox(height: 2),
                   Text(
@@ -1175,10 +1489,7 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                 children: [
                   Text(
                     'Objetivo',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.grey.shade600,
-                    ),
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
                   ),
                   const SizedBox(height: 2),
                   Text(
@@ -1234,40 +1545,38 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                   fontWeight: FontWeight.w600,
                 ),
               ),
-              GestureDetector(
-                onTap: () {
-                  if (savingId != null) _addIncomeToSaving(savingId);
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [Colors.green.shade400, Colors.green.shade600],
-                    ),
-                    borderRadius: BorderRadius.circular(10),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.green.withOpacity(0.3),
-                        blurRadius: 6,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.add, color: Colors.white, size: 14),
-                      SizedBox(width: 4),
-                      Text(
-                        'Agregar',
+              // Actions: Edit / Delete (links) + Ahorrar (button)
+              Align(
+                alignment: Alignment.centerRight,
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  alignment: WrapAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () {
+                        if (savingId != null)
+                          _showEditSavingDialog(savingId, savingData);
+                      },
+                      child: Text(
+                        'Editar',
                         style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
+                          color: Theme.of(context).colorScheme.primary,
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        if (savingId != null) _confirmDeleteSaving(savingId);
+                      },
+                      child: const Text(
+                        'Eliminar',
+                        style: TextStyle(color: Colors.red),
+                      ),
+                    ),
+                    // 'Ahorrar' button removed as requested
+                  ],
                 ),
               ),
             ],
@@ -1277,7 +1586,33 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
     );
   }
 
-  void _showMovementsDialog(String title, List contributions) {
+  Future<void> _showMovementsDialog(
+    String title,
+    List contributions, {
+    String? savingId,
+  }) async {
+    // If there are no contributions in the provided list, try fetching from server
+    if (contributions.isEmpty && savingId != null) {
+      try {
+        final server = await _groupService.getSavingById(savingId);
+        final moves =
+            server['movements'] ??
+            server['contributions'] ??
+            server['transactions'] ??
+            server['movementsList'] ??
+            [];
+        if (moves is List && moves.isNotEmpty) {
+          contributions = moves;
+        } else {
+          final fetched = await _groupService.getSavingMovements(
+            savingId,
+            groupId: widget.groupId,
+          );
+          if (fetched.isNotEmpty) contributions = fetched;
+        }
+      } catch (_) {}
+    }
+
     showDialog(
       context: context,
       builder: (_) => Dialog(
@@ -1311,7 +1646,11 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                         color: Colors.white.withOpacity(0.2),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      child: const Icon(Icons.history_outlined, color: Colors.white, size: 22),
+                      child: const Icon(
+                        Icons.history_outlined,
+                        color: Colors.white,
+                        size: 22,
+                      ),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -1338,7 +1677,11 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.inbox_outlined, size: 48, color: Colors.grey.shade400),
+                            Icon(
+                              Icons.inbox_outlined,
+                              size: 48,
+                              color: Colors.grey.shade400,
+                            ),
                             const SizedBox(height: 12),
                             Text(
                               'No hay movimientos',
@@ -1355,18 +1698,115 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                         shrinkWrap: true,
                         padding: const EdgeInsets.all(16),
                         itemCount: contributions.length,
-                        separatorBuilder: (_, __) => Divider(color: Colors.grey.shade200),
+                        separatorBuilder: (_, __) =>
+                            Divider(color: Colors.grey.shade200),
                         itemBuilder: (_, i) {
                           final c = contributions[i];
-                          final who = c['userName'] ??
-                              c['name'] ??
-                              c['user']?['name'] ??
-                              c['user']?['email'] ??
-                              'Miembro';
-                          final amt = c['amount'] ?? c['value'] ?? 0;
-                          final note = c['note'] ?? c['description'] ?? '';
-                          final date = c['createdAt'] ?? c['date'] ?? '';
-                          
+                          String who = 'Miembro';
+                          try {
+                            if (c['user'] is Map) {
+                              final u = Map<String, dynamic>.from(c['user']);
+                              who =
+                                  (u['name'] ??
+                                          u['displayName'] ??
+                                          u['email'] ??
+                                          u['userName'] ??
+                                          '')
+                                      .toString();
+                            } else {
+                              who = (c['userName'] ?? c['name'] ?? '')
+                                  .toString();
+                            }
+                            if ((who.trim().isEmpty || who == 'Miembro') &&
+                                c['userId'] != null) {
+                              final uid = c['userId'].toString();
+                              final matches = _members.where((mm) {
+                                final ids = <dynamic>[
+                                  mm['userId'],
+                                  mm['uid'],
+                                  mm['user']?['id'],
+                                  mm['user']?['_id'],
+                                  mm['id'],
+                                ];
+                                return ids.any(
+                                  (x) => x != null && x.toString() == uid,
+                                );
+                              }).toList();
+                              if (matches.isNotEmpty) {
+                                who =
+                                    (matches.first['name'] ??
+                                            matches.first['email'] ??
+                                            who)
+                                        .toString();
+                              }
+                            }
+                          } catch (_) {}
+
+                          final amt = _parseToDouble(
+                            c['amount'] ?? c['value'] ?? 0,
+                          );
+                          // Determine movement type: try several possible keys, fallback to sign of amount
+                          bool isWithdraw = false;
+                          try {
+                            final rawType =
+                                (c['type'] ??
+                                        c['movementType'] ??
+                                        c['movement_type'] ??
+                                        c['kind'] ??
+                                        c['action'] ??
+                                        c['transactionType'] ??
+                                        c['transaction_type'])
+                                    ?.toString()
+                                    .toLowerCase();
+                            if (rawType != null) {
+                              if (rawType.contains('withdraw') ||
+                                  rawType.contains('reti') ||
+                                  rawType.contains('debit') ||
+                                  rawType.contains('out') ||
+                                  rawType.contains('remove')) {
+                                isWithdraw = true;
+                              }
+                            }
+                          } catch (_) {}
+                          if (!isWithdraw && amt < 0) isWithdraw = true;
+                          // note intentionally ignored for group saving history
+                          final rawDate =
+                              c['createdAt'] ??
+                              c['date'] ??
+                              c['timestamp'] ??
+                              '';
+                          String dateText = '';
+                          try {
+                            DateTime? dt;
+                            if (rawDate is String)
+                              dt = DateTime.tryParse(rawDate);
+                            else if (rawDate is int)
+                              dt = DateTime.fromMillisecondsSinceEpoch(rawDate);
+                            else if (rawDate is double)
+                              dt = DateTime.fromMillisecondsSinceEpoch(
+                                rawDate.toInt(),
+                              );
+                            if (dt != null)
+                              dateText = DateFormat(
+                                'yyyy-MM-dd HH:mm',
+                              ).format(dt);
+                            else
+                              dateText = rawDate?.toString() ?? '';
+                          } catch (_) {
+                            dateText = rawDate?.toString() ?? '';
+                          }
+
+                          // Build UI with icon/color based on type
+                          final iconData = isWithdraw
+                              ? Icons.remove_circle_outline
+                              : Icons.add_circle_outline;
+                          final iconGradient = isWithdraw
+                              ? const [Color(0xFFDC2626), Color(0xFFB91C1C)]
+                              : const [Color(0xFF10B981), Color(0xFF059669)];
+                          final amountText = isWithdraw
+                              ? '-S/ ${amt.abs().toStringAsFixed(2)}'
+                              : 'S/ ${amt.abs().toStringAsFixed(2)}';
+
                           return Container(
                             padding: const EdgeInsets.all(12),
                             decoration: BoxDecoration(
@@ -1379,17 +1819,22 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                 Container(
                                   padding: const EdgeInsets.all(8),
                                   decoration: BoxDecoration(
-                                    gradient: const LinearGradient(
-                                      colors: [Color(0xFF10B981), Color(0xFF059669)],
+                                    gradient: LinearGradient(
+                                      colors: iconGradient,
                                     ),
                                     borderRadius: BorderRadius.circular(8),
                                   ),
-                                  child: const Icon(Icons.add_circle_outline, color: Colors.white, size: 18),
+                                  child: Icon(
+                                    iconData,
+                                    color: Colors.white,
+                                    size: 18,
+                                  ),
                                 ),
                                 const SizedBox(width: 12),
                                 Expanded(
                                   child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
                                       Text(
                                         who.toString(),
@@ -1398,23 +1843,13 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                           fontSize: 14,
                                         ),
                                       ),
-                                      if (note.toString().isNotEmpty) ...[
-                                        const SizedBox(height: 2),
+                                      if (dateText.isNotEmpty) ...[
+                                        const SizedBox(height: 4),
                                         Text(
-                                          note.toString(),
+                                          dateText,
                                           style: TextStyle(
                                             fontSize: 12,
                                             color: Colors.grey.shade600,
-                                          ),
-                                        ),
-                                      ],
-                                      if (date.toString().isNotEmpty) ...[
-                                        const SizedBox(height: 2),
-                                        Text(
-                                          date.toString().substring(0, 10),
-                                          style: TextStyle(
-                                            fontSize: 11,
-                                            color: Colors.grey.shade500,
                                           ),
                                         ),
                                       ],
@@ -1422,11 +1857,13 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                   ),
                                 ),
                                 Text(
-                                  '+\$${amt.toString()}',
-                                  style: const TextStyle(
-                                    fontSize: 16,
+                                  amountText,
+                                  style: TextStyle(
+                                    fontSize: 15,
                                     fontWeight: FontWeight.bold,
-                                    color: Color(0xFF059669),
+                                    color: isWithdraw
+                                        ? Colors.red.shade600
+                                        : const Color(0xFF059669),
                                   ),
                                 ),
                               ],
@@ -1450,7 +1887,11 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                   ),
                   child: const Text(
                     'Cerrar',
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                    ),
                   ),
                 ),
               ),
@@ -1459,6 +1900,284 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
         ),
       ),
     );
+  }
+
+  Future<void> _showEditSavingDialog(
+    String savingId,
+    Map<String, dynamic>? saving,
+  ) async {
+    if (saving == null) return;
+    final titleCtrl = TextEditingController(
+      text: (saving['title'] ?? saving['name'] ?? '').toString(),
+    );
+    final amountCtrl = TextEditingController(
+      text:
+          (saving['targetAmount'] ??
+                  saving['target_amount'] ??
+                  saving['amount'] ??
+                  '')
+              .toString(),
+    );
+    final dateCtrl = TextEditingController();
+    DateTime? selectedDate;
+    // Try to parse date from common fields
+    final rawDate =
+        saving['targetDate'] ?? saving['date'] ?? saving['goalDate'];
+    if (rawDate != null) {
+      try {
+        if (rawDate is String)
+          selectedDate = DateTime.tryParse(rawDate);
+        else if (rawDate is int)
+          selectedDate = DateTime.fromMillisecondsSinceEpoch(rawDate);
+        else if (rawDate is DateTime)
+          selectedDate = rawDate;
+      } catch (_) {}
+    }
+    if (selectedDate != null)
+      dateCtrl.text = DateFormat.yMMMd().format(selectedDate);
+
+    final formKey = GlobalKey<FormState>();
+    final ok = await showDialog<bool?>(
+      context: context,
+      builder: (_) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(20),
+            color: Colors.white,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(20),
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Color(0xFF8B9DC3), Color(0xFF6B7FA8)],
+                  ),
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(20),
+                    topRight: Radius.circular(20),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(
+                        Icons.edit,
+                        color: Colors.white,
+                        size: 22,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    const Text(
+                      'Editar Meta de Grupo',
+                      style: TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(20),
+                child: Form(
+                  key: formKey,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextFormField(
+                        controller: titleCtrl,
+                        decoration: InputDecoration(
+                          labelText: 'Título',
+                          prefixIcon: Icon(
+                            Icons.label_outlined,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                        validator: (v) => (v == null || v.trim().isEmpty)
+                            ? 'Ingresa un título'
+                            : null,
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: amountCtrl,
+                        decoration: InputDecoration(
+                          labelText: 'Monto objetivo',
+                          prefixIcon: Icon(
+                            Icons.attach_money,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        validator: (v) {
+                          if (v == null || v.trim().isEmpty)
+                            return 'Ingresa un monto';
+                          final n = num.tryParse(v.replaceAll(',', '.'));
+                          if (n == null || n <= 0) return 'Monto inválido';
+                          return null;
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      GestureDetector(
+                        onTap: () async {
+                          final now = DateTime.now();
+                          final picked = await showDatePicker(
+                            context: context,
+                            initialDate: selectedDate ?? now,
+                            firstDate: now,
+                            lastDate: DateTime(now.year + 10),
+                          );
+                          if (picked != null) {
+                            selectedDate = picked;
+                            dateCtrl.text = DateFormat.yMMMd().format(picked);
+                          }
+                        },
+                        child: AbsorbPointer(
+                          child: TextFormField(
+                            controller: dateCtrl,
+                            decoration: InputDecoration(
+                              labelText: 'Fecha objetivo',
+                              prefixIcon: Icon(
+                                Icons.calendar_today_outlined,
+                                color: Colors.grey.shade600,
+                              ),
+                            ),
+                            validator: (v) => (v == null || v.trim().isEmpty)
+                                ? 'Selecciona una fecha'
+                                : null,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(false),
+                      child: Text(
+                        'Cancelar',
+                        style: TextStyle(color: Colors.grey.shade600),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(
+                      onPressed: () {
+                        if (formKey.currentState?.validate() ?? false)
+                          Navigator.of(context).pop(true);
+                      },
+                      child: const Text('Guardar'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    if (ok != true) return;
+    final newTitle = titleCtrl.text.trim();
+    final newAmount = num.tryParse(amountCtrl.text.replaceAll(',', '.'));
+    if (newAmount == null || newAmount <= 0) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Ingresa un monto válido')),
+        );
+      return;
+    }
+    setState(() => _isLoading = true);
+    try {
+      final body = {
+        'title': newTitle,
+        'targetAmount': newAmount,
+        if (selectedDate != null) 'targetDate': selectedDate!.toIso8601String(),
+      };
+      await _groupService.updateSaving(id: savingId, body: body);
+      if (mounted)
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Meta actualizada')));
+      await _loadSavings();
+    } catch (e) {
+      String msg;
+      try {
+        msg = e is Exception
+            ? e.toString().replaceFirst('Exception: ', '')
+            : e.toString();
+      } catch (_) {
+        msg = e.toString();
+      }
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error actualizando meta: $msg')),
+        );
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _confirmDeleteSaving(String savingId) async {
+    final confirm = await showDialog<bool?>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Eliminar meta'),
+        content: const Text(
+          '¿Eliminar esta meta del grupo? Esta acción no se puede deshacer.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    setState(() => _isLoading = true);
+    try {
+      await _groupService.deleteSaving(savingId);
+      if (mounted)
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Meta eliminada')));
+      await _loadSavings();
+    } catch (e) {
+      String msg;
+      try {
+        msg = e is Exception
+            ? e.toString().replaceFirst('Exception: ', '')
+            : e.toString();
+      } catch (_) {
+        msg = e.toString();
+      }
+      if (mounted)
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error eliminando meta: $msg')));
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   @override
@@ -1494,10 +2213,7 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                         gradient: const LinearGradient(
                           begin: Alignment.topLeft,
                           end: Alignment.bottomRight,
-                          colors: [
-                            Color(0xFF6B7280),
-                            Color(0xFF4B5563),
-                          ],
+                          colors: [Color(0xFF6B7280), Color(0xFF4B5563)],
                         ),
                         borderRadius: BorderRadius.circular(20),
                         boxShadow: [
@@ -1541,7 +2257,8 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                     ),
                                     const SizedBox(height: 4),
                                     Text(
-                                      _groupDetail!['description'] ?? 'Sin descripción',
+                                      _groupDetail!['description'] ??
+                                          'Sin descripción',
                                       style: TextStyle(
                                         fontSize: 14,
                                         color: Colors.white.withOpacity(0.9),
@@ -1584,17 +2301,27 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                       Clipboard.setData(
                                         ClipboardData(text: _joinCode ?? ""),
                                       );
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(content: Text('Código copiado')),
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        const SnackBar(
+                                          content: Text('Código copiado'),
+                                        ),
                                       );
                                     },
-                                    icon: const Icon(Icons.copy_outlined, color: Colors.white),
+                                    icon: const Icon(
+                                      Icons.copy_outlined,
+                                      color: Colors.white,
+                                    ),
                                     iconSize: 18,
                                   ),
                                   IconButton(
                                     tooltip: 'Regenerar código',
                                     onPressed: _regenerateJoinCode,
-                                    icon: const Icon(Icons.refresh, color: Colors.white),
+                                    icon: const Icon(
+                                      Icons.refresh,
+                                      color: Colors.white,
+                                    ),
                                     iconSize: 18,
                                   ),
                                 ],
@@ -1636,10 +2363,14 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                           gradient: LinearGradient(
                                             colors: [
                                               Colors.blue.shade50,
-                                              Colors.blue.shade100.withOpacity(0.3),
+                                              Colors.blue.shade100.withOpacity(
+                                                0.3,
+                                              ),
                                             ],
                                           ),
-                                          borderRadius: BorderRadius.circular(16),
+                                          borderRadius: BorderRadius.circular(
+                                            16,
+                                          ),
                                           border: Border.all(
                                             color: Colors.blue.shade200,
                                             width: 2,
@@ -1668,8 +2399,11 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                     )
                                   : ListView.separated(
                                       shrinkWrap: true,
-                                      padding: const EdgeInsets.symmetric(vertical: 8),
-                                      separatorBuilder: (_, __) => const SizedBox(height: 10),
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 8,
+                                      ),
+                                      separatorBuilder: (_, __) =>
+                                          const SizedBox(height: 10),
                                       itemCount: _members.length,
                                       itemBuilder: (_, index) {
                                         final m = _members[index];
@@ -1682,13 +2416,52 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                             FirebaseAuth.instance.currentUser;
                                         String memberName = '';
                                         String? memberPhoto;
-                                        if (m['name'] != null &&
-                                            m['name'].toString().trim().isNotEmpty) {
-                                          memberName = m['name'].toString();
-                                        } else if (m['email'] != null) {
-                                          memberName = m['email'].toString();
+                                        // Check nested user object first (some backends return member info here)
+                                        final userObj = m['user'];
+                                        if (userObj is Map) {
+                                          if (userObj['name'] != null &&
+                                              userObj['name']
+                                                  .toString()
+                                                  .trim()
+                                                  .isNotEmpty) {
+                                            memberName = userObj['name']
+                                                .toString();
+                                          } else if (userObj['displayName'] !=
+                                                  null &&
+                                              userObj['displayName']
+                                                  .toString()
+                                                  .trim()
+                                                  .isNotEmpty) {
+                                            memberName = userObj['displayName']
+                                                .toString();
+                                          } else if (userObj['email'] != null) {
+                                            memberName = userObj['email']
+                                                .toString();
+                                          }
+
+                                          memberPhoto =
+                                              (userObj['photoURL'] ??
+                                                      userObj['photoUrl'] ??
+                                                      userObj['avatar'] ??
+                                                      userObj['picture'])
+                                                  as String?;
                                         }
+
+                                        // Fallback to top-level fields if not present in nested user
+                                        if (memberName.isEmpty) {
+                                          if (m['name'] != null &&
+                                              m['name']
+                                                  .toString()
+                                                  .trim()
+                                                  .isNotEmpty) {
+                                            memberName = m['name'].toString();
+                                          } else if (m['email'] != null) {
+                                            memberName = m['email'].toString();
+                                          }
+                                        }
+
                                         memberPhoto =
+                                            memberPhoto ??
                                             m['photoURL'] as String? ??
                                             m['photoUrl'] as String? ??
                                             m['avatar'] as String? ??
@@ -1704,7 +2477,9 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                         final matchesCurrentUser =
                                             uid != null &&
                                             possibleIds.any(
-                                              (x) => x != null && x.toString() == uid,
+                                              (x) =>
+                                                  x != null &&
+                                                  x.toString() == uid,
                                             );
                                         if ((memberName.isEmpty ||
                                                 memberPhoto == null) &&
@@ -1715,7 +2490,8 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                                     'Miembro')
                                               : memberName;
                                           memberPhoto =
-                                              memberPhoto ?? firebaseUser?.photoURL;
+                                              memberPhoto ??
+                                              firebaseUser?.photoURL;
                                         }
                                         if (memberName.isEmpty)
                                           memberName = 'Miembro';
@@ -1731,49 +2507,59 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                           else
                                             initials =
                                                 (parts[0].substring(0, 1) +
-                                                        parts[1].substring(0, 1))
+                                                        parts[1].substring(
+                                                          0,
+                                                          1,
+                                                        ))
                                                     .toUpperCase();
                                         } catch (_) {
                                           initials = memberName.isNotEmpty
                                               ? memberName[0].toUpperCase()
                                               : '?';
                                         }
-                                        
+
                                         // Color para el rol
                                         final roleColor = role == 'owner'
                                             ? Colors.orange
                                             : role == 'admin'
-                                                ? Colors.blue
-                                                : Colors.grey;
-                                        
+                                            ? Colors.blue
+                                            : Colors.grey;
+
                                         return Container(
                                           decoration: BoxDecoration(
                                             gradient: LinearGradient(
                                               begin: Alignment.topLeft,
                                               end: Alignment.bottomRight,
                                               colors: [
-                                                roleColor.shade50.withOpacity(0.3),
+                                                roleColor.shade50.withOpacity(
+                                                  0.3,
+                                                ),
                                                 Colors.white,
                                               ],
                                             ),
-                                            borderRadius: BorderRadius.circular(14),
+                                            borderRadius: BorderRadius.circular(
+                                              14,
+                                            ),
                                             border: Border.all(
                                               color: roleColor.shade200,
                                               width: 1,
                                             ),
                                             boxShadow: [
                                               BoxShadow(
-                                                color: roleColor.withOpacity(0.1),
+                                                color: roleColor.withOpacity(
+                                                  0.1,
+                                                ),
                                                 blurRadius: 6,
                                                 offset: const Offset(0, 2),
                                               ),
                                             ],
                                           ),
                                           child: ListTile(
-                                            contentPadding: const EdgeInsets.symmetric(
-                                              horizontal: 12,
-                                              vertical: 8,
-                                            ),
+                                            contentPadding:
+                                                const EdgeInsets.symmetric(
+                                                  horizontal: 12,
+                                                  vertical: 8,
+                                                ),
                                             leading: Container(
                                               decoration: BoxDecoration(
                                                 shape: BoxShape.circle,
@@ -1783,7 +2569,8 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                                 ),
                                                 boxShadow: [
                                                   BoxShadow(
-                                                    color: roleColor.withOpacity(0.2),
+                                                    color: roleColor
+                                                        .withOpacity(0.2),
                                                     blurRadius: 4,
                                                     offset: const Offset(0, 2),
                                                   ),
@@ -1791,16 +2578,20 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                               ),
                                               child: CircleAvatar(
                                                 radius: 24,
-                                                backgroundImage: memberPhoto != null
+                                                backgroundImage:
+                                                    memberPhoto != null
                                                     ? NetworkImage(memberPhoto)
                                                     : null,
-                                                backgroundColor: roleColor.shade100,
+                                                backgroundColor:
+                                                    roleColor.shade100,
                                                 child: memberPhoto == null
                                                     ? Text(
                                                         initials,
                                                         style: TextStyle(
-                                                          fontWeight: FontWeight.bold,
-                                                          color: roleColor.shade700,
+                                                          fontWeight:
+                                                              FontWeight.bold,
+                                                          color: roleColor
+                                                              .shade700,
                                                         ),
                                                       )
                                                     : null,
@@ -1814,11 +2605,14 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                               ),
                                             ),
                                             subtitle: Container(
-                                              margin: const EdgeInsets.only(top: 4),
-                                              padding: const EdgeInsets.symmetric(
-                                                horizontal: 8,
-                                                vertical: 3,
+                                              margin: const EdgeInsets.only(
+                                                top: 4,
                                               ),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 8,
+                                                    vertical: 3,
+                                                  ),
                                               decoration: BoxDecoration(
                                                 gradient: LinearGradient(
                                                   colors: [
@@ -1826,14 +2620,15 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                                     roleColor.shade600,
                                                   ],
                                                 ),
-                                                borderRadius: BorderRadius.circular(12),
+                                                borderRadius:
+                                                    BorderRadius.circular(12),
                                               ),
                                               child: Text(
                                                 role == 'owner'
                                                     ? '👑 Líder'
                                                     : role == 'admin'
-                                                        ? '⭐ Admin'
-                                                        : '👤 Miembro',
+                                                    ? '⭐ Admin'
+                                                    : '👤 Miembro',
                                                 style: const TextStyle(
                                                   color: Colors.white,
                                                   fontSize: 11,
@@ -1848,13 +2643,21 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                                       color: roleColor.shade600,
                                                     ),
                                                     shape: RoundedRectangleBorder(
-                                                      borderRadius: BorderRadius.circular(12),
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                            12,
+                                                          ),
                                                     ),
                                                     onSelected: (v) async {
                                                       if (v == 'role') {
-                                                        await _changeRole(memberId);
-                                                      } else if (v == 'delete') {
-                                                        await _deleteMember(memberId);
+                                                        await _changeRole(
+                                                          memberId,
+                                                        );
+                                                      } else if (v ==
+                                                          'delete') {
+                                                        await _deleteMember(
+                                                          memberId,
+                                                        );
                                                       }
                                                     },
                                                     itemBuilder: (_) => [
@@ -1862,7 +2665,11 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                                         value: 'role',
                                                         child: Row(
                                                           children: [
-                                                            Icon(Icons.admin_panel_settings, size: 20),
+                                                            Icon(
+                                                              Icons
+                                                                  .admin_panel_settings,
+                                                              size: 20,
+                                                            ),
                                                             SizedBox(width: 8),
                                                             Text('Cambiar rol'),
                                                           ],
@@ -1872,9 +2679,19 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                                         value: 'delete',
                                                         child: Row(
                                                           children: [
-                                                            Icon(Icons.delete, size: 20, color: Colors.red),
+                                                            Icon(
+                                                              Icons.delete,
+                                                              size: 20,
+                                                              color: Colors.red,
+                                                            ),
                                                             SizedBox(width: 8),
-                                                            Text('Eliminar', style: TextStyle(color: Colors.red)),
+                                                            Text(
+                                                              'Eliminar',
+                                                              style: TextStyle(
+                                                                color:
+                                                                    Colors.red,
+                                                              ),
+                                                            ),
                                                           ],
                                                         ),
                                                       ),
@@ -1895,12 +2712,17 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                       height: 50,
                                       decoration: BoxDecoration(
                                         gradient: const LinearGradient(
-                                          colors: [Color(0xFF6B7280), Color(0xFF4B5563)],
+                                          colors: [
+                                            Color(0xFF6B7280),
+                                            Color(0xFF4B5563),
+                                          ],
                                         ),
                                         borderRadius: BorderRadius.circular(14),
                                         boxShadow: [
                                           BoxShadow(
-                                            color: Colors.black.withOpacity(0.08),
+                                            color: Colors.black.withOpacity(
+                                              0.08,
+                                            ),
                                             blurRadius: 10,
                                             offset: const Offset(0, 3),
                                           ),
@@ -1909,16 +2731,23 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                       child: Material(
                                         color: Colors.transparent,
                                         child: InkWell(
-                                          borderRadius: BorderRadius.circular(14),
+                                          borderRadius: BorderRadius.circular(
+                                            14,
+                                          ),
                                           onTap: _showCreateSavingDialog,
                                           child: Row(
-                                            mainAxisAlignment: MainAxisAlignment.center,
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.center,
                                             children: [
                                               Container(
-                                                padding: const EdgeInsets.all(6),
+                                                padding: const EdgeInsets.all(
+                                                  6,
+                                                ),
                                                 decoration: BoxDecoration(
-                                                  color: Colors.white.withOpacity(0.2),
-                                                  borderRadius: BorderRadius.circular(6),
+                                                  color: Colors.white
+                                                      .withOpacity(0.2),
+                                                  borderRadius:
+                                                      BorderRadius.circular(6),
                                                 ),
                                                 child: const Icon(
                                                   Icons.add,
@@ -1949,7 +2778,8 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                               padding: const EdgeInsets.all(32),
                                               decoration: BoxDecoration(
                                                 color: Colors.grey.shade50,
-                                                borderRadius: BorderRadius.circular(16),
+                                                borderRadius:
+                                                    BorderRadius.circular(16),
                                                 border: Border.all(
                                                   color: Colors.grey.shade200,
                                                   width: 1.5,
@@ -1967,9 +2797,11 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                                   Text(
                                                     'No hay metas creadas',
                                                     style: TextStyle(
-                                                      fontWeight: FontWeight.bold,
+                                                      fontWeight:
+                                                          FontWeight.bold,
                                                       fontSize: 16,
-                                                      color: Colors.grey.shade700,
+                                                      color:
+                                                          Colors.grey.shade700,
                                                     ),
                                                   ),
                                                   const SizedBox(height: 4),
@@ -1977,7 +2809,8 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                                     'Crea una meta para este grupo',
                                                     style: TextStyle(
                                                       fontSize: 13,
-                                                      color: Colors.grey.shade600,
+                                                      color:
+                                                          Colors.grey.shade600,
                                                     ),
                                                   ),
                                                 ],
@@ -1985,70 +2818,126 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                             ),
                                           )
                                         : ListView.separated(
-                                            padding: const EdgeInsets.only(bottom: 16),
-                                            separatorBuilder: (_, __) => const SizedBox(height: 12),
+                                            padding: const EdgeInsets.only(
+                                              bottom: 16,
+                                            ),
+                                            separatorBuilder: (_, __) =>
+                                                const SizedBox(height: 12),
                                             itemCount: _savings.length,
                                             itemBuilder: (_, i) {
                                               final s = _savings[i];
-                                              final title = s['title'] ?? s['name'] ?? 'Meta';
-                                              final target =
-                                                  (s['targetAmount'] ??
-                                                  s['target_amount'] ??
-                                                  s['amount'] ??
-                                                  0).toDouble();
-                                              
-                                              final contributions = s['movements'] ??
+                                              final title =
+                                                  s['title'] ??
+                                                  s['name'] ??
+                                                  'Meta';
+                                              final target = _parseToDouble(
+                                                s['targetAmount'] ??
+                                                    s['target_amount'] ??
+                                                    s['amount'] ??
+                                                    0,
+                                              );
+
+                                              final contributions =
+                                                  s['movements'] ??
                                                   s['contributions'] ??
                                                   s['transactions'] ??
                                                   [];
                                               final savingId =
-                                                  s['id']?.toString() ?? s['_id']?.toString();
-                                              
-                                              // Calcular total acumulado
-                                              double currentAmount = 0;
-                                              if (contributions is List) {
+                                                  s['id']?.toString() ??
+                                                  s['_id']?.toString();
+
+                                              // Prefer stored currentAmount (backend may update it)
+                                              // otherwise, fall back to summing contributions
+                                              double currentAmount =
+                                                  _parseToDouble(
+                                                    s['currentAmount'] ??
+                                                        s['current'] ??
+                                                        s['saved'] ??
+                                                        0,
+                                                  );
+                                              if ((currentAmount == 0 ||
+                                                      currentAmount.isNaN) &&
+                                                  contributions is List) {
+                                                double sum = 0;
                                                 for (var c in contributions) {
-                                                  final amt = c['amount'] ?? c['value'] ?? 0;
-                                                  currentAmount += (amt is num ? amt.toDouble() : 0);
+                                                  final amt =
+                                                      c['amount'] ??
+                                                      c['value'] ??
+                                                      0;
+                                                  sum += _parseToDouble(amt);
                                                 }
+                                                if (sum > 0)
+                                                  currentAmount = sum;
                                               }
-                                              
-                                              final progress = target > 0 ? (currentAmount / target).clamp(0.0, 1.0) : 0.0;
-                                              
+
+                                              final progress = target > 0
+                                                  ? (currentAmount / target)
+                                                        .clamp(0.0, 1.0)
+                                                  : 0.0;
+
                                               // Colores sutiles y elegantes basados en progreso
                                               final MaterialColor primaryColor;
                                               if (progress >= 0.9) {
-                                                primaryColor = Colors.blueGrey; // Completado
+                                                primaryColor = Colors
+                                                    .blueGrey; // Completado
                                               } else if (progress >= 0.6) {
-                                                primaryColor = Colors.grey; // Buen progreso
+                                                primaryColor = Colors
+                                                    .grey; // Buen progreso
                                               } else if (progress >= 0.3) {
-                                                primaryColor = Colors.grey; // Progreso medio
+                                                primaryColor = Colors
+                                                    .grey; // Progreso medio
                                               } else {
-                                                primaryColor = Colors.grey; // Inicio
+                                                primaryColor =
+                                                    Colors.grey; // Inicio
                                               }
-                                              
+
                                               // Load details if needed
                                               if ((contributions == null ||
                                                       (contributions is List &&
-                                                          contributions.isEmpty)) &&
+                                                          contributions
+                                                              .isEmpty)) &&
                                                   savingId != null &&
                                                   (s['_detailed'] == null ||
                                                       s['_detailed'] != true)) {
-                                                if (_savingLoading[savingId] != true) {
+                                                if (_savingLoading[savingId] !=
+                                                    true) {
                                                   Future.microtask(
-                                                    () => _loadSavingDetail(savingId, i),
+                                                    () => _loadSavingDetail(
+                                                      savingId,
+                                                      i,
+                                                    ),
                                                   );
                                                 }
                                               }
-                                              
-                                              return _buildGoalCard(
+
+                                              final widgetCard = _buildGoalCard(
                                                 title: title.toString(),
                                                 currentAmount: currentAmount,
                                                 targetAmount: target,
                                                 progress: progress,
                                                 primaryColor: primaryColor,
                                                 savingId: savingId,
-                                                contributions: contributions is List ? contributions : [],
+                                                contributions:
+                                                    contributions is List
+                                                    ? contributions
+                                                    : [],
+                                                savingData: s,
+                                                savingIndex: i,
+                                              );
+
+                                              // When tapping the group saving card show actions (Ahorrar / Retirar)
+                                              return GestureDetector(
+                                                onTap: () {
+                                                  if (savingId != null) {
+                                                    _showGroupSavingActionsModal(
+                                                      savingId,
+                                                      title.toString(),
+                                                      currentAmount,
+                                                      i,
+                                                    );
+                                                  }
+                                                },
+                                                child: widgetCard,
                                               );
                                             },
                                           ),

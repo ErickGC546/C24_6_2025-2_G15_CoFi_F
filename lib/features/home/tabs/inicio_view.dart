@@ -14,6 +14,7 @@ import 'package:flutter_slidable/flutter_slidable.dart';
 
 // Importar el widget del micrófono
 import 'package:cofi/core/widgets/microphone_button.dart';
+import 'package:cofi/features/home/tabs/group_detail_page.dart';
 
 class InicioView extends StatefulWidget {
   const InicioView({super.key});
@@ -212,8 +213,21 @@ class _InicioViewState extends State<InicioView> {
               final amount = type == 'income'
                   ? parsedAmount.abs()
                   : -parsedAmount.abs();
+
+              // Parse the original date into a DateTime so charts can rely on it
               final rawDate = t['occurredAt'] ?? t['createdAt'] ?? t['date'];
-              final displayDate = _formatDisplayDate(rawDate);
+              DateTime dt;
+              if (rawDate is DateTime) {
+                dt = rawDate;
+              } else if (rawDate is int) {
+                dt = DateTime.fromMillisecondsSinceEpoch(rawDate);
+              } else {
+                dt =
+                    DateTime.tryParse(rawDate?.toString() ?? '') ??
+                    DateTime.now();
+              }
+
+              final displayDate = _formatDisplayDate(dt);
 
               return {
                 'id': t['id'] ?? t['_id'] ?? t['transactionId'],
@@ -221,7 +235,10 @@ class _InicioViewState extends State<InicioView> {
                 'amount': amount,
                 'title': t['note'] ?? t['description'] ?? t['title'] ?? '',
                 'type': type,
+                // keep human friendly date for UI
                 'date': displayDate,
+                // also keep the parsed DateTime so charts and logic can use it
+                'occurredAt': dt,
                 // si la transacción incluye un objeto category, preferir su nombre
                 'category': (t['category'] is Map)
                     ? (t['category']['name'] ?? 'Otros')
@@ -344,54 +361,68 @@ class _InicioViewState extends State<InicioView> {
     // evitar reconstruir todo el árbol; no calcular aquí.
 
     return Scaffold(
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SizedBox(height: 40),
-            Text(
-              '¡Hola, $nombre!',
-              style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Resumen de tus finanzas',
-              style: TextStyle(fontSize: 16, color: Colors.grey[600]),
-            ),
-            // account selector + total card
-            if (isLoading)
-              const Center(child: CircularProgressIndicator())
-            else if (error != null)
-              Column(
-                children: [
-                  Text(
-                    'Error: $error',
-                    style: const TextStyle(color: Colors.red),
-                  ),
-                  const SizedBox(height: 8),
-                  ElevatedButton(
-                    onPressed: _loadHomeData,
-                    child: const Text('Reintentar'),
-                  ),
-                ],
-              )
-            else ...[
-              _buildTotalBalanceCard(context),
+      body: RefreshIndicator(
+        onRefresh: () => _loadHomeData(showLoading: false),
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          // Añadir padding inferior dinámico para evitar overflow
+          // cuando el FloatingActionButton está en `centerFloat`.
+          padding: EdgeInsets.fromLTRB(
+            16,
+            16,
+            16,
+            MediaQuery.of(context).viewPadding.bottom + 120,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 40),
+              Text(
+                '¡Hola, $nombre!',
+                style: const TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Resumen de tus finanzas',
+                style: TextStyle(fontSize: 16, color: Colors.grey[600]),
+              ),
+              // account selector + total card
+              if (isLoading)
+                const Center(child: CircularProgressIndicator())
+              else if (error != null)
+                Column(
+                  children: [
+                    Text(
+                      'Error: $error',
+                      style: const TextStyle(color: Colors.red),
+                    ),
+                    const SizedBox(height: 8),
+                    ElevatedButton(
+                      onPressed: _loadHomeData,
+                      child: const Text('Reintentar'),
+                    ),
+                  ],
+                )
+              else ...[
+                _buildTotalBalanceCard(context),
+              ],
+              const SizedBox(height: 16),
+              _buildMonthlyBudgetCard(context),
+              const SizedBox(height: 24),
+              _buildRecentMovements(),
+              const SizedBox(height: 20),
+              _buildSavingsGoals(context),
+              const SizedBox(height: 24),
+              // 📊 GRÁFICOS PRINCIPALES
+              _buildIncomeByCategory(),
+              const SizedBox(height: 20),
+              _buildWeeklyExpenses(),
+              const SizedBox(height: 80),
             ],
-            const SizedBox(height: 16),
-            _buildMonthlyBudgetCard(context),
-            const SizedBox(height: 24),
-            _buildRecentMovements(),
-            const SizedBox(height: 20),
-            _buildSavingsGoals(context),
-            const SizedBox(height: 24),
-            // 📊 GRÁFICOS PRINCIPALES
-            _buildIncomeByCategory(),
-            const SizedBox(height: 20),
-            _buildWeeklyExpenses(),
-            const SizedBox(height: 80),
-          ],
+          ),
         ),
       ),
       floatingActionButton: const MicrophoneButton(),
@@ -599,7 +630,7 @@ class _InicioViewState extends State<InicioView> {
   void _showBudgetModal(BuildContext context) {
     // Determinar si estamos editando o creando
     final bool isEditing = monthlyBudgetGoal > 0;
-    
+
     final controller = TextEditingController(
       text: monthlyBudgetGoal > 0 ? monthlyBudgetGoal.toStringAsFixed(2) : '',
     );
@@ -633,11 +664,11 @@ class _InicioViewState extends State<InicioView> {
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        isEditing 
-                          ? 'Editar Presupuesto Mensual' 
-                          : 'Establecer Presupuesto Mensual',
+                        isEditing
+                            ? 'Editar Presupuesto Mensual'
+                            : 'Establecer Presupuesto Mensual',
                         style: const TextStyle(
-                          fontSize: 18, 
+                          fontSize: 18,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
@@ -739,8 +770,8 @@ class _InicioViewState extends State<InicioView> {
                               SnackBar(
                                 content: Text(
                                   isEditing
-                                    ? 'Presupuesto actualizado: S/ ${value.toStringAsFixed(2)}'
-                                    : 'Presupuesto mensual guardado: S/ ${value.toStringAsFixed(2)}',
+                                      ? 'Presupuesto actualizado: S/ ${value.toStringAsFixed(2)}'
+                                      : 'Presupuesto mensual guardado: S/ ${value.toStringAsFixed(2)}',
                                 ),
                                 backgroundColor: Colors.green,
                                 duration: const Duration(seconds: 3),
@@ -761,13 +792,13 @@ class _InicioViewState extends State<InicioView> {
                           }
                         }
                       },
-                      backgroundColor: isEditing 
-                        ? Colors.orange.shade600 
-                        : Colors.blue.shade500,
+                      backgroundColor: isEditing
+                          ? Colors.orange.shade600
+                          : Colors.blue.shade500,
                       icon: isEditing ? Icons.edit : Icons.save,
-                      label: isEditing 
-                        ? 'Actualizar Presupuesto' 
-                        : 'Guardar Presupuesto',
+                      label: isEditing
+                          ? 'Actualizar Presupuesto'
+                          : 'Guardar Presupuesto',
                     ),
                   ),
                   if (isEditing) ...[
@@ -792,22 +823,24 @@ class _InicioViewState extends State<InicioView> {
                                 TextButton(
                                   onPressed: () async {
                                     Navigator.pop(dialogCtx); // cerrar diálogo
-                                    
+
                                     // Resetear el presupuesto localmente
                                     monthlyBudgetGoal = 0.0;
                                     _monthlyBudgetGoalNotifier.value = 0.0;
-                                    
+
                                     // Recalcular balance
                                     totalBalance = movements.fold(
                                       0.0,
                                       (sum, m) => sum + _toDouble(m['amount']),
                                     );
                                     _totalBalanceNotifier.value = totalBalance;
-                                    
+
                                     Navigator.pop(ctx); // cerrar modal
-                                    
+
                                     if (mounted) {
-                                      ScaffoldMessenger.of(context).showSnackBar(
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
                                         const SnackBar(
                                           content: Text(
                                             'Presupuesto eliminado correctamente',
@@ -855,14 +888,15 @@ class _InicioViewState extends State<InicioView> {
         final now = DateTime.now();
         final incomeByCategory = <String, double>{};
         final categoryNames = <String, String>{};
-        
+
         // Mapear IDs de categoría a nombres
         for (final cat in categories) {
           final id = (cat['_id'] ?? cat['id'])?.toString();
-          final name = (cat['name'] ?? cat['title'] ?? 'Sin categoría').toString();
+          final name = (cat['name'] ?? cat['title'] ?? 'Sin categoría')
+              .toString();
           if (id != null) categoryNames[id] = name;
         }
-        
+
         for (final t in movementsList) {
           try {
             // Verificar tipo de transacción
@@ -872,14 +906,15 @@ class _InicioViewState extends State<InicioView> {
             final amount = rawAmount is num
                 ? rawAmount.toDouble()
                 : double.tryParse(rawAmount?.toString() ?? '0') ?? 0.0;
-            
+
             // Determinar si es ingreso
-            bool isIncome = typeStr.contains('income') || 
-                           typeStr.contains('ingres') || 
-                           amount > 0;
-            
+            bool isIncome =
+                typeStr.contains('income') ||
+                typeStr.contains('ingres') ||
+                amount > 0;
+
             if (!isIncome) continue;
-            
+
             // Verificar si está en los últimos 7 días
             final rawDate = t['occurredAt'] ?? t['createdAt'] ?? t['date'];
             DateTime dt;
@@ -896,7 +931,7 @@ class _InicioViewState extends State<InicioView> {
             // Obtener categoría (usar ID primero, luego nombre)
             final categoryId = (t['categoryId'] ?? t['category'])?.toString();
             String categoryName = 'Sin categoría';
-            
+
             if (categoryId != null && categoryNames.containsKey(categoryId)) {
               categoryName = categoryNames[categoryId]!;
             } else if (t['categoryName'] != null) {
@@ -904,8 +939,8 @@ class _InicioViewState extends State<InicioView> {
             } else if (categoryId != null) {
               categoryName = categoryId;
             }
-            
-            incomeByCategory[categoryName] = 
+
+            incomeByCategory[categoryName] =
                 (incomeByCategory[categoryName] ?? 0) + amount.abs();
           } catch (_) {}
         }
@@ -914,7 +949,7 @@ class _InicioViewState extends State<InicioView> {
         final sortedEntries = incomeByCategory.entries.toList()
           ..sort((a, b) => b.value.compareTo(a.value));
         final topEntries = sortedEntries.take(5).toList();
-        
+
         return Card(
           elevation: 3,
           shape: RoundedRectangleBorder(
@@ -925,10 +960,7 @@ class _InicioViewState extends State<InicioView> {
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: [
-                  Colors.green.shade50,
-                  Colors.white,
-                ],
+                colors: [Colors.green.shade50, Colors.white],
               ),
               borderRadius: BorderRadius.circular(20),
             ),
@@ -984,11 +1016,18 @@ class _InicioViewState extends State<InicioView> {
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Icon(Icons.insert_chart, size: 48, color: Colors.grey.shade300),
+                              Icon(
+                                Icons.insert_chart,
+                                size: 48,
+                                color: Colors.grey.shade300,
+                              ),
                               const SizedBox(height: 12),
                               Text(
                                 'No hay ingresos en los últimos 7 días',
-                                style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
+                                style: TextStyle(
+                                  color: Colors.grey.shade600,
+                                  fontSize: 14,
+                                ),
                               ),
                             ],
                           ),
@@ -1065,7 +1104,7 @@ class _InicioViewState extends State<InicioView> {
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 2),
                 child: Text(
-                  entry.key.length > 8 
+                  entry.key.length > 8
                       ? '${entry.key.substring(0, 8)}...'
                       : entry.key,
                   style: TextStyle(
@@ -1093,7 +1132,7 @@ class _InicioViewState extends State<InicioView> {
         // Obtener últimos 7 días
         final now = DateTime.now();
         final Map<String, double> dailyExpenses = {};
-        
+
         // Inicializar últimos 7 días
         for (int i = 6; i >= 0; i--) {
           final date = now.subtract(Duration(days: i));
@@ -1110,14 +1149,15 @@ class _InicioViewState extends State<InicioView> {
             final amount = rawAmount is num
                 ? rawAmount.toDouble()
                 : double.tryParse(rawAmount?.toString() ?? '0') ?? 0.0;
-            
+
             // Determinar si es gasto
-            bool isExpense = typeStr.contains('expense') || 
-                            typeStr.contains('gasto') || 
-                            amount < 0;
-            
+            bool isExpense =
+                typeStr.contains('expense') ||
+                typeStr.contains('gasto') ||
+                amount < 0;
+
             if (!isExpense) continue;
-            
+
             // Obtener fecha
             final rawDate = t['occurredAt'] ?? t['createdAt'] ?? t['date'];
             DateTime dt;
@@ -1133,7 +1173,7 @@ class _InicioViewState extends State<InicioView> {
             if (diff >= 0 && diff <= 6) {
               final label = '${dt.day}/${dt.month}';
               if (dailyExpenses.containsKey(label)) {
-                dailyExpenses[label] = 
+                dailyExpenses[label] =
                     (dailyExpenses[label] ?? 0) + amount.abs();
               }
             }
@@ -1153,10 +1193,7 @@ class _InicioViewState extends State<InicioView> {
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: [
-                  Colors.red.shade50,
-                  Colors.white,
-                ],
+                colors: [Colors.red.shade50, Colors.white],
               ),
               borderRadius: BorderRadius.circular(20),
             ),
@@ -1212,11 +1249,18 @@ class _InicioViewState extends State<InicioView> {
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Icon(Icons.insert_chart, size: 48, color: Colors.grey.shade300),
+                              Icon(
+                                Icons.insert_chart,
+                                size: 48,
+                                color: Colors.grey.shade300,
+                              ),
                               const SizedBox(height: 12),
                               Text(
                                 'No hay gastos en los últimos 7 días',
-                                style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
+                                style: TextStyle(
+                                  color: Colors.grey.shade600,
+                                  fontSize: 14,
+                                ),
                               ),
                             ],
                           ),
@@ -1232,7 +1276,9 @@ class _InicioViewState extends State<InicioView> {
   }
 
   Widget _buildWeeklyChart(List<double> values, List<String> labels) {
-    final maxValue = values.isEmpty ? 1.0 : values.reduce((a, b) => a > b ? a : b);
+    final maxValue = values.isEmpty
+        ? 1.0
+        : values.reduce((a, b) => a > b ? a : b);
     final usableMax = maxValue > 0 ? maxValue : 1.0;
     final now = DateTime.now();
 
@@ -1267,10 +1313,7 @@ class _InicioViewState extends State<InicioView> {
                           gradient: LinearGradient(
                             begin: Alignment.bottomCenter,
                             end: Alignment.topCenter,
-                            colors: [
-                              Colors.red.shade400,
-                              Colors.red.shade600,
-                            ],
+                            colors: [Colors.red.shade400, Colors.red.shade600],
                           ),
                           borderRadius: BorderRadius.circular(8),
                           boxShadow: [
@@ -1297,8 +1340,16 @@ class _InicioViewState extends State<InicioView> {
             final day = int.tryParse(parts[0]) ?? 1;
             final month = int.tryParse(parts[1]) ?? 1;
             final date = DateTime(now.year, month, day);
-            final weekday = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'][date.weekday % 7];
-            
+            final weekday = [
+              'Dom',
+              'Lun',
+              'Mar',
+              'Mié',
+              'Jue',
+              'Vie',
+              'Sáb',
+            ][date.weekday % 7];
+
             return Expanded(
               child: Column(
                 children: [
@@ -1313,10 +1364,7 @@ class _InicioViewState extends State<InicioView> {
                   ),
                   Text(
                     labels[i],
-                    style: TextStyle(
-                      fontSize: 9,
-                      color: Colors.grey.shade600,
-                    ),
+                    style: TextStyle(fontSize: 9, color: Colors.grey.shade600),
                     textAlign: TextAlign.center,
                   ),
                 ],
@@ -1337,7 +1385,7 @@ class _InicioViewState extends State<InicioView> {
         const double itemHeight = 80.0;
         const int maxVisibleItems = 3;
         final double maxHeight = itemHeight * maxVisibleItems;
-        
+
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1373,11 +1421,11 @@ class _InicioViewState extends State<InicioView> {
             // Container con altura máxima y scroll independiente
             Container(
               constraints: BoxConstraints(
-                maxHeight: movementsList.isEmpty 
-                    ? 100 
-                    : (movementsList.length > maxVisibleItems 
-                        ? maxHeight 
-                        : movementsList.length * itemHeight),
+                maxHeight: movementsList.isEmpty
+                    ? 100
+                    : (movementsList.length > maxVisibleItems
+                          ? maxHeight
+                          : movementsList.length * itemHeight),
               ),
               child: movementsList.isEmpty
                   ? Center(
@@ -1415,7 +1463,8 @@ class _InicioViewState extends State<InicioView> {
                         final movement = movementsList[index];
                         return Slidable(
                           key: Key(
-                            (movement['title'] ?? '') + (movement['date'] ?? ''),
+                            (movement['title'] ?? '') +
+                                (movement['date'] ?? ''),
                           ),
 
                           startActionPane: ActionPane(
@@ -1618,13 +1667,57 @@ class _InicioViewState extends State<InicioView> {
     final MaterialColor primaryColor = progress >= 1.0
         ? Colors.green
         : progress >= 0.7
-            ? Colors.blue
-            : progress >= 0.4
-                ? Colors.orange
-                : Colors.purple;
+        ? Colors.blue
+        : progress >= 0.4
+        ? Colors.orange
+        : Colors.purple;
 
     return GestureDetector(
-      onTap: () => _showGoalFormModal(context, index),
+      onTap: () {
+        try {
+          final Map<String, dynamic> g = (goals.length > index)
+              ? goals[index]
+              : {};
+
+          // Try common keys where a group id might be stored
+          dynamic maybeGroup =
+              g['groupId'] ?? g['group'] ?? g['group_id'] ?? g['groupId'];
+          String? groupId;
+
+          if (maybeGroup != null) {
+            if (maybeGroup is Map) {
+              groupId =
+                  (maybeGroup['id'] ??
+                          maybeGroup['_id'] ??
+                          maybeGroup['groupId'])
+                      ?.toString();
+            } else {
+              groupId = maybeGroup.toString();
+            }
+          }
+
+          // Fallback: if 'group' is nested under other keys
+          if ((groupId == null || groupId.isEmpty) && g['group'] is Map) {
+            final nested = g['group'] as Map;
+            groupId = (nested['id'] ?? nested['_id'])?.toString();
+          }
+
+          if (groupId != null && groupId.isNotEmpty) {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => GroupDetailPage(groupId: groupId),
+              ),
+            );
+          } else {
+            // Default: abrir modal para agregar/retirar en la meta
+            // en lugar de navegar a la vista completa (evita fondo negro)
+            _showGoalFormModal(context, index);
+          }
+        } catch (_) {
+          // On any error, fallback to showing the goal form modal
+          _showGoalFormModal(context, index);
+        }
+      },
       child: Container(
         width: cardWidth,
         height: cardHeight,
@@ -1677,9 +1770,7 @@ class _InicioViewState extends State<InicioView> {
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Icon(
-                          progress >= 1.0
-                              ? Icons.check_circle
-                              : Icons.flag,
+                          progress >= 1.0 ? Icons.check_circle : Icons.flag,
                           color: primaryColor.shade700,
                           size: 22,
                         ),
@@ -1848,355 +1939,8 @@ class _InicioViewState extends State<InicioView> {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  // Acciones: Retirar y Ahorrar (modernas)
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      // Retirar
-                      ElevatedButton(
-                        onPressed: () async {
-                          final amountController = TextEditingController();
-                          final confirmed = await showModalBottomSheet<bool>(
-                            context: context,
-                            isScrollControlled: true,
-                            backgroundColor: Colors.transparent,
-                            builder: (ctx) {
-                              return Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: Colors.black.withOpacity(0.1),
-                                      blurRadius: 20,
-                                      offset: const Offset(0, -5),
-                                    ),
-                                  ],
-                                ),
-                                child: Padding(
-                                  padding: EdgeInsets.only(
-                                    left: 20,
-                                    right: 20,
-                                    top: 16,
-                                    bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
-                                  ),
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Center(
-                                        child: Container(
-                                          width: 40,
-                                          height: 4,
-                                          decoration: BoxDecoration(
-                                            color: Colors.grey.shade300,
-                                            borderRadius: BorderRadius.circular(2),
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(height: 16),
-                                      Container(
-                                        width: double.infinity,
-                                        padding: const EdgeInsets.all(16),
-                                        decoration: const BoxDecoration(
-                                          gradient: LinearGradient(
-                                            colors: [Color(0xFFEF4444), Color(0xFFDC2626)],
-                                          ),
-                                          borderRadius: BorderRadius.all(Radius.circular(14)),
-                                        ),
-                                        child: Row(
-                                          children: [
-                                            Container(
-                                              padding: const EdgeInsets.all(10),
-                                              decoration: BoxDecoration(
-                                                color: Colors.white.withOpacity(0.2),
-                                                borderRadius: BorderRadius.circular(10),
-                                              ),
-                                              child: const Icon(Icons.remove_circle_outline, color: Colors.white, size: 22),
-                                            ),
-                                            const SizedBox(width: 12),
-                                            const Expanded(
-                                              child: Text(
-                                                'Retirar Ahorro',
-                                                style: TextStyle(
-                                                  fontSize: 18,
-                                                  fontWeight: FontWeight.bold,
-                                                  color: Colors.white,
-                                                ),
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      const SizedBox(height: 16),
-                                      TextField(
-                                        controller: amountController,
-                                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                                        decoration: InputDecoration(
-                                          labelText: 'Monto a retirar',
-                                          prefixText: 'S/ ',
-                                          prefixIcon: Icon(Icons.attach_money, color: Colors.grey.shade600),
-                                          border: OutlineInputBorder(
-                                            borderRadius: BorderRadius.circular(14),
-                                            borderSide: BorderSide(color: Colors.grey.shade300),
-                                          ),
-                                          enabledBorder: OutlineInputBorder(
-                                            borderRadius: BorderRadius.circular(14),
-                                            borderSide: BorderSide(color: Colors.grey.shade300),
-                                          ),
-                                          focusedBorder: const OutlineInputBorder(
-                                            borderRadius: BorderRadius.all(Radius.circular(14)),
-                                            borderSide: BorderSide(color: Color(0xFFDC2626), width: 2),
-                                          ),
-                                          filled: true,
-                                          fillColor: Colors.grey.shade50,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 12),
-                                      Row(
-                                        mainAxisAlignment: MainAxisAlignment.end,
-                                        children: [
-                                          TextButton(
-                                            onPressed: () => Navigator.pop(ctx, false),
-                                            child: Text('Cancelar', style: TextStyle(color: Colors.grey.shade600, fontWeight: FontWeight.w600)),
-                                          ),
-                                          const SizedBox(width: 8),
-                                          ElevatedButton(
-                                            onPressed: () => Navigator.pop(ctx, true),
-                                            style: ElevatedButton.styleFrom(
-                                              backgroundColor: const Color(0xFFDC2626),
-                                              foregroundColor: Colors.white,
-                                              elevation: 0,
-                                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                            ),
-                                            child: const Text('Retirar', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              );
-                            },
-                          );
-
-                          if (confirmed != true) return;
-
-                          final text = amountController.text.trim();
-                          final amount = double.tryParse(text.replaceAll(',', '.'));
-                          if (amount == null || amount <= 0) {
-                            if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ingresa un monto válido')));
-                            return;
-                          }
-
-                          final List<Map<String, dynamic>> currentGoals = List<Map<String, dynamic>>.from(_goalsNotifier.value);
-                          if (index < 0 || index >= currentGoals.length) return;
-                          final item = Map<String, dynamic>.from(currentGoals[index]);
-                          final double cur = _toDouble(item['current']);
-                          if (amount > cur) {
-                            if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No puedes retirar más de lo ahorrado')));
-                            return;
-                          }
-
-                          final newSaved = (cur - amount).clamp(0.0, double.infinity);
-                          // Backend update if id available
-                          try {
-                            final id = item['id']?.toString();
-                            if (id != null && id.isNotEmpty) {
-                              final goalService = GoalService();
-                              await goalService.updateGoal(id, {'currentAmount': newSaved});
-                            }
-                          } catch (e) {
-                            // Soft fail: keep UI responsive
-                          }
-
-                          // Update UI list and notifier
-                          item['current'] = newSaved;
-                          currentGoals[index] = item;
-                          _goalsNotifier.value = List<Map<String, dynamic>>.from(currentGoals);
-                          goals = currentGoals;
-                          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Retiro realizado')));
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFFDC2626),
-                          foregroundColor: Colors.white,
-                          elevation: 0,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        ),
-                        child: const Text('Retirar'),
-                      ),
-                      const SizedBox(width: 8),
-                      // Ahorrar
-                      ElevatedButton(
-                        onPressed: () async {
-                          final amountController = TextEditingController();
-                          final confirmed = await showModalBottomSheet<bool>(
-                            context: context,
-                            isScrollControlled: true,
-                            backgroundColor: Colors.transparent,
-                            builder: (ctx) {
-                              return Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: Colors.black.withOpacity(0.1),
-                                      blurRadius: 20,
-                                      offset: const Offset(0, -5),
-                                    ),
-                                  ],
-                                ),
-                                child: Padding(
-                                  padding: EdgeInsets.only(
-                                    left: 20,
-                                    right: 20,
-                                    top: 16,
-                                    bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
-                                  ),
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Center(
-                                        child: Container(
-                                          width: 40,
-                                          height: 4,
-                                          decoration: BoxDecoration(
-                                            color: Colors.grey.shade300,
-                                            borderRadius: BorderRadius.circular(2),
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(height: 16),
-                                      Container(
-                                        width: double.infinity,
-                                        padding: const EdgeInsets.all(16),
-                                        decoration: const BoxDecoration(
-                                          gradient: LinearGradient(
-                                            colors: [Color(0xFF10B981), Color(0xFF059669)],
-                                          ),
-                                          borderRadius: BorderRadius.all(Radius.circular(14)),
-                                        ),
-                                        child: Row(
-                                          children: [
-                                            Container(
-                                              padding: const EdgeInsets.all(10),
-                                              decoration: BoxDecoration(
-                                                color: Colors.white.withOpacity(0.2),
-                                                borderRadius: BorderRadius.circular(10),
-                                              ),
-                                              child: const Icon(Icons.add_circle_outline, color: Colors.white, size: 22),
-                                            ),
-                                            const SizedBox(width: 12),
-                                            const Expanded(
-                                              child: Text(
-                                                'Agregar Ahorro',
-                                                style: TextStyle(
-                                                  fontSize: 18,
-                                                  fontWeight: FontWeight.bold,
-                                                  color: Colors.white,
-                                                ),
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      const SizedBox(height: 16),
-                                      TextField(
-                                        controller: amountController,
-                                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                                        decoration: InputDecoration(
-                                          labelText: 'Monto a ahorrar',
-                                          prefixText: 'S/ ',
-                                          prefixIcon: Icon(Icons.attach_money, color: Colors.grey.shade600),
-                                          border: OutlineInputBorder(
-                                            borderRadius: BorderRadius.circular(14),
-                                            borderSide: BorderSide(color: Colors.grey.shade300),
-                                          ),
-                                          enabledBorder: OutlineInputBorder(
-                                            borderRadius: BorderRadius.circular(14),
-                                            borderSide: BorderSide(color: Colors.grey.shade300),
-                                          ),
-                                          focusedBorder: const OutlineInputBorder(
-                                            borderRadius: BorderRadius.all(Radius.circular(14)),
-                                            borderSide: BorderSide(color: Color(0xFF059669), width: 2),
-                                          ),
-                                          filled: true,
-                                          fillColor: Colors.grey.shade50,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 12),
-                                      Row(
-                                        mainAxisAlignment: MainAxisAlignment.end,
-                                        children: [
-                                          TextButton(
-                                            onPressed: () => Navigator.pop(ctx, false),
-                                            child: Text('Cancelar', style: TextStyle(color: Colors.grey.shade600, fontWeight: FontWeight.w600)),
-                                          ),
-                                          const SizedBox(width: 8),
-                                          ElevatedButton(
-                                            onPressed: () => Navigator.pop(ctx, true),
-                                            style: ElevatedButton.styleFrom(
-                                              backgroundColor: const Color(0xFF059669),
-                                              foregroundColor: Colors.white,
-                                              elevation: 0,
-                                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                            ),
-                                            child: const Text('Agregar', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              );
-                            },
-                          );
-
-                          if (confirmed != true) return;
-
-                          final text = amountController.text.trim();
-                          final amount = double.tryParse(text.replaceAll(',', '.'));
-                          if (amount == null || amount <= 0) {
-                            if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ingresa un monto válido')));
-                            return;
-                          }
-
-                          final List<Map<String, dynamic>> currentGoals = List<Map<String, dynamic>>.from(_goalsNotifier.value);
-                          if (index < 0 || index >= currentGoals.length) return;
-                          final item = Map<String, dynamic>.from(currentGoals[index]);
-                          final double cur = _toDouble(item['current']);
-                          final newSaved = cur + amount;
-
-                          try {
-                            final id = item['id']?.toString();
-                            if (id != null && id.isNotEmpty) {
-                              final goalService = GoalService();
-                              await goalService.updateGoal(id, {'currentAmount': newSaved});
-                            }
-                          } catch (e) {
-                            // ignore backend failure for UI responsiveness
-                          }
-
-                          item['current'] = newSaved;
-                          currentGoals[index] = item;
-                          _goalsNotifier.value = List<Map<String, dynamic>>.from(currentGoals);
-                          goals = currentGoals;
-                          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ahorro agregado')));
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.green.shade600,
-                          foregroundColor: Colors.white,
-                          elevation: 0,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        ),
-                        child: const Text('Ahorrar'),
-                      ),
-                    ],
-                  ),
+                  // Acciones removidas: Retirar y Ahorrar (eliminadas para evitar overflow visual)
+                  const SizedBox.shrink(),
                 ],
               ),
             ),
@@ -2363,10 +2107,11 @@ class _InicioViewState extends State<InicioView> {
                           borderRadius: BorderRadius.circular(20),
                           boxShadow: [
                             BoxShadow(
-                              color: (isIncome
-                                      ? Colors.green.shade400
-                                      : Colors.red.shade400)
-                                  .withOpacity(0.3),
+                              color:
+                                  (isIncome
+                                          ? Colors.green.shade400
+                                          : Colors.red.shade400)
+                                      .withOpacity(0.3),
                               blurRadius: 8,
                               offset: const Offset(0, 4),
                             ),
@@ -2411,7 +2156,9 @@ class _InicioViewState extends State<InicioView> {
                           ),
                           prefixText: 'S/ ',
                           prefixStyle: TextStyle(
-                            color: isIncome ? Colors.green.shade700 : Colors.red.shade700,
+                            color: isIncome
+                                ? Colors.green.shade700
+                                : Colors.red.shade700,
                             fontWeight: FontWeight.bold,
                             fontSize: 18,
                           ),
@@ -2426,7 +2173,9 @@ class _InicioViewState extends State<InicioView> {
                           focusedBorder: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(16),
                             borderSide: BorderSide(
-                              color: isIncome ? Colors.green.shade500 : Colors.red.shade500,
+                              color: isIncome
+                                  ? Colors.green.shade500
+                                  : Colors.red.shade500,
                               width: 2,
                             ),
                           ),
@@ -2471,7 +2220,9 @@ class _InicioViewState extends State<InicioView> {
                           focusedBorder: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(16),
                             borderSide: BorderSide(
-                              color: isIncome ? Colors.green.shade500 : Colors.red.shade500,
+                              color: isIncome
+                                  ? Colors.green.shade500
+                                  : Colors.red.shade500,
                               width: 2,
                             ),
                           ),
@@ -2510,7 +2261,9 @@ class _InicioViewState extends State<InicioView> {
                           focusedBorder: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(16),
                             borderSide: BorderSide(
-                              color: isIncome ? Colors.green.shade500 : Colors.red.shade500,
+                              color: isIncome
+                                  ? Colors.green.shade500
+                                  : Colors.red.shade500,
                               width: 2,
                             ),
                           ),
@@ -2542,111 +2295,115 @@ class _InicioViewState extends State<InicioView> {
                         height: 56,
                         child: ElevatedButton(
                           onPressed: () async {
-                        final newMonto =
-                            double.tryParse(montoController.text) ?? 0.0;
-                        if (newMonto <= 0 ||
-                            descripcionController.text.trim().isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text(
-                                'Por favor, completa todos los campos',
-                              ),
-                              backgroundColor: Colors.orange,
-                            ),
-                          );
-                          return;
-                        }
-
-                        final id = originalMovement['id'] as String?;
-                        final newAmount = isIncome ? newMonto : -newMonto;
-
-                        try {
-                          if (id != null) {
-                            final updated =
-                                await TransactionService.updateTransaction(
-                                  id: id,
-                                  amount: newAmount,
-                                  type: isIncome ? 'income' : 'expense',
-                                  note: descripcionController.text.trim(),
-                                  categoryId: categoriaSeleccionada,
-                                );
-
-                            // Update local model and notifiers without a full rebuild
-                            final amountDifference = newAmount - originalAmount;
-                            totalBalance += amountDifference;
-
-                            if (originalAmount < 0)
-                              monthlyBudget -= originalAmount.abs();
-                            if (!isIncome) monthlyBudget += newMonto;
-
-                            final rawDate =
-                                updated['occurredAt'] ?? updated['createdAt'];
-
-                            movements[index] = {
-                              'id': updated['id'] ?? updated['_id'] ?? id,
-                              'title': descripcionController.text.trim(),
-                              'amount': newAmount,
-                              'date': _formatDisplayDate(
-                                rawDate ?? _formatDate(),
-                              ),
-                              'category':
-                                  (categories.firstWhere(
-                                    (c) =>
-                                        (c['id'] ?? '').toString() ==
-                                        categoriaSeleccionada,
-                                    orElse: () => {},
-                                  )['name']) ??
-                                  categoriaSeleccionada,
-                              'categoryId': categoriaSeleccionada,
-                            };
-                            _movementsNotifier.value =
-                                List<Map<String, dynamic>>.from(movements);
-                            _totalBalanceNotifier.value = totalBalance;
-                            _monthlyBudgetNotifier.value = monthlyBudget;
-                          } else {
-                            // If no id, just update locally
-                            final amountDifference = newAmount - originalAmount;
-                            totalBalance += amountDifference;
-                            movements[index] = {
-                              'title': descripcionController.text.trim(),
-                              'amount': newAmount,
-                              'date': _formatDate(),
-                              'category':
-                                  (categories.firstWhere(
-                                    (c) =>
-                                        (c['id'] ?? '').toString() ==
-                                        categoriaSeleccionada,
-                                    orElse: () => {},
-                                  )['name']) ??
-                                  categoriaSeleccionada,
-                              'categoryId': categoriaSeleccionada,
-                            };
-                            _movementsNotifier.value =
-                                List<Map<String, dynamic>>.from(movements);
-                            _totalBalanceNotifier.value = totalBalance;
-                          }
-
-                          Navigator.pop(context);
-                          if (mounted)
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text(
-                                  '✓ Movimiento actualizado correctamente',
+                            final newMonto =
+                                double.tryParse(montoController.text) ?? 0.0;
+                            if (newMonto <= 0 ||
+                                descripcionController.text.trim().isEmpty) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'Por favor, completa todos los campos',
+                                  ),
+                                  backgroundColor: Colors.orange,
                                 ),
-                                backgroundColor: Colors.blue,
-                                duration: Duration(seconds: 2),
-                              ),
-                            );
-                          // refresh data from backend after update (silent)
-                          if (mounted) await _loadHomeData(showLoading: false);
-                        } catch (e) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text('Error actualizando: $e'),
-                              backgroundColor: Colors.orange,
-                            ),
-                          );
-                        }
+                              );
+                              return;
+                            }
+
+                            final id = originalMovement['id'] as String?;
+                            final newAmount = isIncome ? newMonto : -newMonto;
+
+                            try {
+                              if (id != null) {
+                                final updated =
+                                    await TransactionService.updateTransaction(
+                                      id: id,
+                                      amount: newAmount,
+                                      type: isIncome ? 'income' : 'expense',
+                                      note: descripcionController.text.trim(),
+                                      categoryId: categoriaSeleccionada,
+                                    );
+
+                                // Update local model and notifiers without a full rebuild
+                                final amountDifference =
+                                    newAmount - originalAmount;
+                                totalBalance += amountDifference;
+
+                                if (originalAmount < 0)
+                                  monthlyBudget -= originalAmount.abs();
+                                if (!isIncome) monthlyBudget += newMonto;
+
+                                final rawDate =
+                                    updated['occurredAt'] ??
+                                    updated['createdAt'];
+
+                                movements[index] = {
+                                  'id': updated['id'] ?? updated['_id'] ?? id,
+                                  'title': descripcionController.text.trim(),
+                                  'amount': newAmount,
+                                  'date': _formatDisplayDate(
+                                    rawDate ?? _formatDate(),
+                                  ),
+                                  'category':
+                                      (categories.firstWhere(
+                                        (c) =>
+                                            (c['id'] ?? '').toString() ==
+                                            categoriaSeleccionada,
+                                        orElse: () => {},
+                                      )['name']) ??
+                                      categoriaSeleccionada,
+                                  'categoryId': categoriaSeleccionada,
+                                };
+                                _movementsNotifier.value =
+                                    List<Map<String, dynamic>>.from(movements);
+                                _totalBalanceNotifier.value = totalBalance;
+                                _monthlyBudgetNotifier.value = monthlyBudget;
+                              } else {
+                                // If no id, just update locally
+                                final amountDifference =
+                                    newAmount - originalAmount;
+                                totalBalance += amountDifference;
+                                movements[index] = {
+                                  'title': descripcionController.text.trim(),
+                                  'amount': newAmount,
+                                  'date': _formatDate(),
+                                  'category':
+                                      (categories.firstWhere(
+                                        (c) =>
+                                            (c['id'] ?? '').toString() ==
+                                            categoriaSeleccionada,
+                                        orElse: () => {},
+                                      )['name']) ??
+                                      categoriaSeleccionada,
+                                  'categoryId': categoriaSeleccionada,
+                                };
+                                _movementsNotifier.value =
+                                    List<Map<String, dynamic>>.from(movements);
+                                _totalBalanceNotifier.value = totalBalance;
+                              }
+
+                              Navigator.pop(context);
+                              if (mounted)
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      '✓ Movimiento actualizado correctamente',
+                                    ),
+                                    backgroundColor: Colors.blue,
+                                    duration: Duration(seconds: 2),
+                                  ),
+                                );
+                              // refresh data from backend after update (silent)
+                              if (mounted)
+                                await _loadHomeData(showLoading: false);
+                            } catch (e) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('Error actualizando: $e'),
+                                  backgroundColor: Colors.orange,
+                                ),
+                              );
+                            }
                           },
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.blue.shade500,
@@ -2660,10 +2417,7 @@ class _InicioViewState extends State<InicioView> {
                           child: Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Icon(
-                                Icons.check_circle_outline,
-                                size: 24,
-                              ),
+                              Icon(Icons.check_circle_outline, size: 24),
                               const SizedBox(width: 12),
                               Text(
                                 'Guardar Cambios',
@@ -2749,7 +2503,10 @@ class _InicioViewState extends State<InicioView> {
                         ),
                         decoration: BoxDecoration(
                           gradient: LinearGradient(
-                            colors: [Colors.purple.shade400, Colors.purple.shade600],
+                            colors: [
+                              Colors.purple.shade400,
+                              Colors.purple.shade600,
+                            ],
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
                           ),
@@ -2934,42 +2691,44 @@ class _InicioViewState extends State<InicioView> {
                               height: 56,
                               child: ElevatedButton(
                                 onPressed: () {
-                            final monto =
-                                double.tryParse(montoController.text) ?? 0.0;
-                            // Update local state and notifiers without full rebuild
-                            goal['current'] = (goal['current'] + monto).clamp(
-                              0,
-                              goal['total'],
-                            );
-                            totalBalance += monto;
-                            movements.insert(0, {
-                              'title': descripcionController.text.isEmpty
-                                  ? goal['title']
-                                  : descripcionController.text,
-                              'amount': monto,
-                              'date': _formatDate(),
-                              'category':
-                                  (categories.firstWhere(
-                                    (c) =>
-                                        (c['id'] ?? '').toString() ==
+                                  final monto =
+                                      double.tryParse(montoController.text) ??
+                                      0.0;
+                                  // Update local state and notifiers without full rebuild
+                                  goal['current'] = (goal['current'] + monto)
+                                      .clamp(0, goal['total']);
+                                  totalBalance += monto;
+                                  movements.insert(0, {
+                                    'title': descripcionController.text.isEmpty
+                                        ? goal['title']
+                                        : descripcionController.text,
+                                    'amount': monto,
+                                    'date': _formatDate(),
+                                    'category':
+                                        (categories.firstWhere(
+                                          (c) =>
+                                              (c['id'] ?? '').toString() ==
+                                              categoriaSeleccionada,
+                                          orElse: () => {},
+                                        )['name']) ??
                                         categoriaSeleccionada,
-                                    orElse: () => {},
-                                  )['name']) ??
-                                  categoriaSeleccionada,
-                              'categoryId': categoriaSeleccionada,
-                            });
-                            _movementsNotifier.value =
-                                List<Map<String, dynamic>>.from(movements);
-                            _totalBalanceNotifier.value = totalBalance;
-                            _goalsNotifier.value =
-                                List<Map<String, dynamic>>.from(goals);
-                            Navigator.pop(context);
+                                    'categoryId': categoriaSeleccionada,
+                                  });
+                                  _movementsNotifier.value =
+                                      List<Map<String, dynamic>>.from(
+                                        movements,
+                                      );
+                                  _totalBalanceNotifier.value = totalBalance;
+                                  _goalsNotifier.value =
+                                      List<Map<String, dynamic>>.from(goals);
+                                  Navigator.pop(context);
                                 },
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: Colors.green.shade500,
                                   foregroundColor: Colors.white,
                                   elevation: 0,
-                                  shadowColor: Colors.green.shade500.withOpacity(0.4),
+                                  shadowColor: Colors.green.shade500
+                                      .withOpacity(0.4),
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(16),
                                   ),
@@ -2997,40 +2756,48 @@ class _InicioViewState extends State<InicioView> {
                               height: 56,
                               child: ElevatedButton(
                                 onPressed: () {
-                            final monto =
-                                double.tryParse(montoController.text) ?? 0.0;
-                            goal['current'] = max(0, goal['current'] - monto);
-                            totalBalance -= monto;
-                            monthlyBudget += monto;
-                            movements.insert(0, {
-                              'title': descripcionController.text.isEmpty
-                                  ? goal['title']
-                                  : descripcionController.text,
-                              'amount': -monto,
-                              'date': _formatDate(),
-                              'category':
-                                  (categories.firstWhere(
-                                    (c) =>
-                                        (c['id'] ?? '').toString() ==
+                                  final monto =
+                                      double.tryParse(montoController.text) ??
+                                      0.0;
+                                  goal['current'] = max(
+                                    0,
+                                    goal['current'] - monto,
+                                  );
+                                  totalBalance -= monto;
+                                  monthlyBudget += monto;
+                                  movements.insert(0, {
+                                    'title': descripcionController.text.isEmpty
+                                        ? goal['title']
+                                        : descripcionController.text,
+                                    'amount': -monto,
+                                    'date': _formatDate(),
+                                    'category':
+                                        (categories.firstWhere(
+                                          (c) =>
+                                              (c['id'] ?? '').toString() ==
+                                              categoriaSeleccionada,
+                                          orElse: () => {},
+                                        )['name']) ??
                                         categoriaSeleccionada,
-                                    orElse: () => {},
-                                  )['name']) ??
-                                  categoriaSeleccionada,
-                              'categoryId': categoriaSeleccionada,
-                            });
-                            _movementsNotifier.value =
-                                List<Map<String, dynamic>>.from(movements);
-                            _totalBalanceNotifier.value = totalBalance;
-                            _monthlyBudgetNotifier.value = monthlyBudget;
-                            _goalsNotifier.value =
-                                List<Map<String, dynamic>>.from(goals);
-                            Navigator.pop(context);
+                                    'categoryId': categoriaSeleccionada,
+                                  });
+                                  _movementsNotifier.value =
+                                      List<Map<String, dynamic>>.from(
+                                        movements,
+                                      );
+                                  _totalBalanceNotifier.value = totalBalance;
+                                  _monthlyBudgetNotifier.value = monthlyBudget;
+                                  _goalsNotifier.value =
+                                      List<Map<String, dynamic>>.from(goals);
+                                  Navigator.pop(context);
                                 },
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: Colors.red.shade500,
                                   foregroundColor: Colors.white,
                                   elevation: 0,
-                                  shadowColor: Colors.red.shade500.withOpacity(0.4),
+                                  shadowColor: Colors.red.shade500.withOpacity(
+                                    0.4,
+                                  ),
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(16),
                                   ),
@@ -3118,431 +2885,449 @@ class _InicioViewState extends State<InicioView> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                    // Barra de arrastre
-                    Container(
-                      width: 40,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: Colors.grey.shade300,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    // Título con ícono y gradiente
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        vertical: 12,
-                        horizontal: 20,
-                      ),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: isIncome
-                              ? [Colors.green.shade400, Colors.green.shade600]
-                              : [Colors.red.shade400, Colors.red.shade600],
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        ),
-                        borderRadius: BorderRadius.circular(20),
-                        boxShadow: [
-                          BoxShadow(
-                            color: (isIncome
-                                    ? Colors.green.shade400
-                                    : Colors.red.shade400)
-                                .withOpacity(0.3),
-                            blurRadius: 8,
-                            offset: const Offset(0, 4),
-                          ),
-                        ],
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.2),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Icon(
-                              isIncome
-                                  ? Icons.arrow_upward_rounded
-                                  : Icons.arrow_downward_rounded,
-                              color: Colors.white,
-                              size: 24,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Text(
-                            isIncome ? 'Agregar Ingreso' : 'Agregar Gasto',
-                            style: const TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                    // Campo de Monto
-                    TextField(
-                      controller: montoController,
-                      decoration: InputDecoration(
-                        labelText: 'Monto',
-                        labelStyle: TextStyle(
-                          color: Colors.grey.shade700,
-                          fontWeight: FontWeight.w500,
-                        ),
-                        prefixText: 'S/ ',
-                        prefixStyle: TextStyle(
-                          color: isIncome ? Colors.green.shade700 : Colors.red.shade700,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 18,
-                        ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide(color: Colors.grey.shade300),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide(color: Colors.grey.shade300),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide(
-                            color: isIncome ? Colors.green.shade500 : Colors.red.shade500,
-                            width: 2,
-                          ),
-                        ),
-                        filled: true,
-                        fillColor: Colors.grey.shade50,
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 16,
+                      // Barra de arrastre
+                      Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade300,
+                          borderRadius: BorderRadius.circular(2),
                         ),
                       ),
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      keyboardType: const TextInputType.numberWithOptions(
-                        decimal: true,
-                      ),
-                      autofocus: true,
-                    ),
-                    const SizedBox(height: 16),
-                    // Campo de Descripción
-                    TextField(
-                      controller: descripcionController,
-                      decoration: InputDecoration(
-                        labelText: 'Descripción',
-                        labelStyle: TextStyle(
-                          color: Colors.grey.shade700,
-                          fontWeight: FontWeight.w500,
-                        ),
-                        hintText: 'Ej: Compra en supermercado',
-                        hintStyle: TextStyle(color: Colors.grey.shade400),
-                        prefixIcon: Icon(
-                          Icons.description_outlined,
-                          color: Colors.grey.shade600,
-                        ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide(color: Colors.grey.shade300),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide(color: Colors.grey.shade300),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide(
-                            color: isIncome ? Colors.green.shade500 : Colors.red.shade500,
-                            width: 2,
-                          ),
-                        ),
-                        filled: true,
-                        fillColor: Colors.grey.shade50,
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 16,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    // Dropdown de Categoría
-                    DropdownButtonFormField<String>(
-                      value: categoriaSeleccionada.isEmpty
-                          ? null
-                          : categoriaSeleccionada,
-                      decoration: InputDecoration(
-                        labelText: 'Categoría',
-                        labelStyle: TextStyle(
-                          color: Colors.grey.shade700,
-                          fontWeight: FontWeight.w500,
-                        ),
-                        prefixIcon: Icon(
-                          Icons.category_outlined,
-                          color: Colors.grey.shade600,
-                        ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide(color: Colors.grey.shade300),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide(color: Colors.grey.shade300),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                          borderSide: BorderSide(
-                            color: isIncome ? Colors.green.shade500 : Colors.red.shade500,
-                            width: 2,
-                          ),
-                        ),
-                        filled: true,
-                        fillColor: Colors.grey.shade50,
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 16,
-                        ),
-                      ),
-                      items: categorias
-                          .map(
-                            (c) => DropdownMenuItem<String>(
-                              value: (c['id'] ?? '').toString(),
-                              child: Text((c['name'] ?? 'Otros').toString()),
-                            ),
-                          )
-                          .toList(),
-                      onChanged: (v) {
-                        setModalState(() {
-                          categoriaSeleccionada = v ?? '';
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    // Botón para crear nueva categoría
-                    TextButton.icon(
-                      onPressed: () async {
-                        await _showCreateCategoryDialog(
-                          context,
-                          isIncome: isIncome,
-                          onCategoryCreated: (newCategory) {
-                            setModalState(() {
-                              // Agregar la nueva categoría a la lista local
-                              categories.add(newCategory);
-                              // Seleccionarla automáticamente
-                              categoriaSeleccionada = 
-                                  (newCategory['id'] ?? '').toString();
-                            });
-                          },
-                        );
-                      },
-                      icon: Icon(
-                        Icons.add_circle_outline,
-                        size: 20,
-                        color: isIncome ? Colors.green.shade600 : Colors.red.shade600,
-                      ),
-                      label: Text(
-                        'Crear nueva categoría',
-                        style: TextStyle(
-                          color: isIncome ? Colors.green.shade600 : Colors.red.shade600,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      style: TextButton.styleFrom(
+                      const SizedBox(height: 20),
+                      // Título con ícono y gradiente
+                      Container(
                         padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 8,
+                          vertical: 12,
+                          horizontal: 20,
                         ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    // Botón de acción moderno
-                    SizedBox(
-                      width: double.infinity,
-                      height: 56,
-                      child: ElevatedButton(
-                        onPressed: () async {
-                          final monto =
-                              double.tryParse(montoController.text) ?? 0.0;
-
-                          if (monto <= 0) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text(
-                                  'Por favor ingresa un monto válido',
-                                ),
-                                backgroundColor: Colors.orange,
-                              ),
-                            );
-                            return;
-                          }
-
-                          if (descripcionController.text.trim().isEmpty) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text(
-                                  'Por favor ingresa una descripción',
-                                ),
-                                backgroundColor: Colors.orange,
-                              ),
-                            );
-                            return;
-                          }
-
-                        // llamar al backend para crear transacción (backend crea/encuentra cuenta principal)
-                        try {
-                          final amount = isIncome ? monto : -monto;
-                          final createdResp =
-                              await TransactionService.createTransaction(
-                                amount: monto,
-                                type: isIncome ? 'income' : 'expense',
-                                note: descripcionController.text.trim(),
-                                categoryId: categoriaSeleccionada,
-                              );
-
-                          // backend devuelve { message, transaction, newBalance }
-                          final created =
-                              createdResp['transaction'] ?? createdResp;
-                          final newBalanceRaw = createdResp['newBalance'];
-                          final newBalance = newBalanceRaw != null
-                              ? _toDouble(newBalanceRaw)
-                              : null;
-
-                          // Update local state and notifiers without full rebuild
-                          // Priorizar el balance del backend si está disponible
-                          if (newBalance != null) {
-                            totalBalance = newBalance;
-                          } else {
-                            // Fallback: calcular localmente
-                            if (!isIncome) {
-                              monthlyBudget += monto;
-                              if (monthlyBudgetGoal > 0) {
-                                totalBalance = monthlyBudgetGoal - monthlyBudget;
-                              } else {
-                                totalBalance += amount;
-                              }
-                            } else {
-                              // Para ingresos
-                              if (monthlyBudgetGoal > 0) {
-                                // Si hay presupuesto mensual, los ingresos no afectan el balance
-                                // El balance es: presupuesto - gastos
-                                totalBalance = monthlyBudgetGoal - monthlyBudget;
-                              } else {
-                                // Sin presupuesto, sumar el ingreso
-                                totalBalance += amount;
-                              }
-                            }
-                          }
-
-                          // Actualizar monthlyBudget solo si es gasto
-                          if (!isIncome) {
-                            monthlyBudget += monto;
-                          }
-
-                          final rawDate = created != null
-                              ? (created['occurredAt'] ?? created['createdAt'])
-                              : null;
-
-                          movements.insert(0, {
-                            'id': created != null
-                                ? (created['id'] ??
-                                      created['_id'] ??
-                                      created['transactionId'])
-                                : null,
-                            'title': descripcionController.text.trim(),
-                            'amount': amount,
-                            'date': _formatDisplayDate(
-                              rawDate ?? _formatDate(),
-                            ),
-                            'category':
-                                (categories.firstWhere(
-                                  (c) =>
-                                      (c['id'] ?? '').toString() ==
-                                      categoriaSeleccionada,
-                                  orElse: () => {},
-                                )['name']) ??
-                                categoriaSeleccionada,
-                            'categoryId': categoriaSeleccionada,
-                          });
-                          _movementsNotifier.value =
-                              List<Map<String, dynamic>>.from(movements);
-                          _totalBalanceNotifier.value = totalBalance;
-                          _monthlyBudgetNotifier.value = monthlyBudget;
-
-                          Navigator.pop(context);
-
-                          if (mounted)
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  isIncome
-                                      ? '✓ Ingreso agregado correctamente'
-                                      : '✓ Gasto registrado correctamente',
-                                ),
-                                backgroundColor: isIncome
-                                    ? Colors.green
-                                    : Colors.red,
-                                duration: const Duration(seconds: 2),
-                              ),
-                            );
-                          // No hacer refresh inmediato para evitar parpadeo
-                          // El estado local ya está actualizado correctamente
-                        } catch (e) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text('Error creando transacción: $e'),
-                              backgroundColor: Colors.orange,
-                            ),
-                          );
-                        }
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: isIncome
-                              ? Colors.green.shade500
-                              : Colors.red.shade500,
-                          foregroundColor: Colors.white,
-                          elevation: 0,
-                          shadowColor: (isIncome
-                                  ? Colors.green.shade500
-                                  : Colors.red.shade500)
-                              .withOpacity(0.4),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(16),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: isIncome
+                                ? [Colors.green.shade400, Colors.green.shade600]
+                                : [Colors.red.shade400, Colors.red.shade600],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
                           ),
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [
+                            BoxShadow(
+                              color:
+                                  (isIncome
+                                          ? Colors.green.shade400
+                                          : Colors.red.shade400)
+                                      .withOpacity(0.3),
+                              blurRadius: 8,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
                         ),
                         child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(
-                              Icons.check_circle_outline,
-                              size: 24,
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Icon(
+                                isIncome
+                                    ? Icons.arrow_upward_rounded
+                                    : Icons.arrow_downward_rounded,
+                                color: Colors.white,
+                                size: 24,
+                              ),
                             ),
                             const SizedBox(width: 12),
                             Text(
-                              isIncome ? 'Confirmar Ingreso' : 'Confirmar Gasto',
+                              isIncome ? 'Agregar Ingreso' : 'Agregar Gasto',
                               style: const TextStyle(
-                                fontSize: 16,
+                                fontSize: 20,
                                 fontWeight: FontWeight.bold,
-                                letterSpacing: 0.5,
+                                color: Colors.white,
                               ),
                             ),
                           ],
                         ),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 24),
+                      // Campo de Monto
+                      TextField(
+                        controller: montoController,
+                        decoration: InputDecoration(
+                          labelText: 'Monto',
+                          labelStyle: TextStyle(
+                            color: Colors.grey.shade700,
+                            fontWeight: FontWeight.w500,
+                          ),
+                          prefixText: 'S/ ',
+                          prefixStyle: TextStyle(
+                            color: isIncome
+                                ? Colors.green.shade700
+                                : Colors.red.shade700,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 18,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(
+                              color: isIncome
+                                  ? Colors.green.shade500
+                                  : Colors.red.shade500,
+                              width: 2,
+                            ),
+                          ),
+                          filled: true,
+                          fillColor: Colors.grey.shade50,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 16,
+                          ),
+                        ),
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        autofocus: true,
+                      ),
+                      const SizedBox(height: 16),
+                      // Campo de Descripción
+                      TextField(
+                        controller: descripcionController,
+                        decoration: InputDecoration(
+                          labelText: 'Descripción',
+                          labelStyle: TextStyle(
+                            color: Colors.grey.shade700,
+                            fontWeight: FontWeight.w500,
+                          ),
+                          hintText: 'Ej: Compra en supermercado',
+                          hintStyle: TextStyle(color: Colors.grey.shade400),
+                          prefixIcon: Icon(
+                            Icons.description_outlined,
+                            color: Colors.grey.shade600,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(
+                              color: isIncome
+                                  ? Colors.green.shade500
+                                  : Colors.red.shade500,
+                              width: 2,
+                            ),
+                          ),
+                          filled: true,
+                          fillColor: Colors.grey.shade50,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 16,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      // Dropdown de Categoría
+                      DropdownButtonFormField<String>(
+                        value: categoriaSeleccionada.isEmpty
+                            ? null
+                            : categoriaSeleccionada,
+                        decoration: InputDecoration(
+                          labelText: 'Categoría',
+                          labelStyle: TextStyle(
+                            color: Colors.grey.shade700,
+                            fontWeight: FontWeight.w500,
+                          ),
+                          prefixIcon: Icon(
+                            Icons.category_outlined,
+                            color: Colors.grey.shade600,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(color: Colors.grey.shade300),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(16),
+                            borderSide: BorderSide(
+                              color: isIncome
+                                  ? Colors.green.shade500
+                                  : Colors.red.shade500,
+                              width: 2,
+                            ),
+                          ),
+                          filled: true,
+                          fillColor: Colors.grey.shade50,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 16,
+                          ),
+                        ),
+                        items: categorias
+                            .map(
+                              (c) => DropdownMenuItem<String>(
+                                value: (c['id'] ?? '').toString(),
+                                child: Text((c['name'] ?? 'Otros').toString()),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (v) {
+                          setModalState(() {
+                            categoriaSeleccionada = v ?? '';
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      // Botón para crear nueva categoría
+                      TextButton.icon(
+                        onPressed: () async {
+                          await _showCreateCategoryDialog(
+                            context,
+                            isIncome: isIncome,
+                            onCategoryCreated: (newCategory) {
+                              setModalState(() {
+                                // Agregar la nueva categoría a la lista local
+                                categories.add(newCategory);
+                                // Seleccionarla automáticamente
+                                categoriaSeleccionada =
+                                    (newCategory['id'] ?? '').toString();
+                              });
+                            },
+                          );
+                        },
+                        icon: Icon(
+                          Icons.add_circle_outline,
+                          size: 20,
+                          color: isIncome
+                              ? Colors.green.shade600
+                              : Colors.red.shade600,
+                        ),
+                        label: Text(
+                          'Crear nueva categoría',
+                          style: TextStyle(
+                            color: isIncome
+                                ? Colors.green.shade600
+                                : Colors.red.shade600,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 8,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      // Botón de acción moderno
+                      SizedBox(
+                        width: double.infinity,
+                        height: 56,
+                        child: ElevatedButton(
+                          onPressed: () async {
+                            final monto =
+                                double.tryParse(montoController.text) ?? 0.0;
+
+                            if (monto <= 0) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'Por favor ingresa un monto válido',
+                                  ),
+                                  backgroundColor: Colors.orange,
+                                ),
+                              );
+                              return;
+                            }
+
+                            if (descripcionController.text.trim().isEmpty) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'Por favor ingresa una descripción',
+                                  ),
+                                  backgroundColor: Colors.orange,
+                                ),
+                              );
+                              return;
+                            }
+
+                            // llamar al backend para crear transacción (backend crea/encuentra cuenta principal)
+                            try {
+                              final amount = isIncome ? monto : -monto;
+                              final createdResp =
+                                  await TransactionService.createTransaction(
+                                    amount: monto,
+                                    type: isIncome ? 'income' : 'expense',
+                                    note: descripcionController.text.trim(),
+                                    categoryId: categoriaSeleccionada,
+                                  );
+
+                              // backend devuelve { message, transaction, newBalance }
+                              final created =
+                                  createdResp['transaction'] ?? createdResp;
+                              final newBalanceRaw = createdResp['newBalance'];
+                              final newBalance = newBalanceRaw != null
+                                  ? _toDouble(newBalanceRaw)
+                                  : null;
+
+                              // Update local state and notifiers without full rebuild
+                              // Priorizar el balance del backend si está disponible
+                              if (newBalance != null) {
+                                totalBalance = newBalance;
+                              } else {
+                                // Fallback: calcular localmente
+                                if (!isIncome) {
+                                  monthlyBudget += monto;
+                                  if (monthlyBudgetGoal > 0) {
+                                    totalBalance =
+                                        monthlyBudgetGoal - monthlyBudget;
+                                  } else {
+                                    totalBalance += amount;
+                                  }
+                                } else {
+                                  // Para ingresos
+                                  if (monthlyBudgetGoal > 0) {
+                                    // Si hay presupuesto mensual, los ingresos no afectan el balance
+                                    // El balance es: presupuesto - gastos
+                                    totalBalance =
+                                        monthlyBudgetGoal - monthlyBudget;
+                                  } else {
+                                    // Sin presupuesto, sumar el ingreso
+                                    totalBalance += amount;
+                                  }
+                                }
+                              }
+
+                              // Actualizar monthlyBudget solo si es gasto
+                              if (!isIncome) {
+                                monthlyBudget += monto;
+                              }
+
+                              final rawDate = created != null
+                                  ? (created['occurredAt'] ??
+                                        created['createdAt'])
+                                  : null;
+
+                              movements.insert(0, {
+                                'id': created != null
+                                    ? (created['id'] ??
+                                          created['_id'] ??
+                                          created['transactionId'])
+                                    : null,
+                                'title': descripcionController.text.trim(),
+                                'amount': amount,
+                                'date': _formatDisplayDate(
+                                  rawDate ?? _formatDate(),
+                                ),
+                                'category':
+                                    (categories.firstWhere(
+                                      (c) =>
+                                          (c['id'] ?? '').toString() ==
+                                          categoriaSeleccionada,
+                                      orElse: () => {},
+                                    )['name']) ??
+                                    categoriaSeleccionada,
+                                'categoryId': categoriaSeleccionada,
+                              });
+                              _movementsNotifier.value =
+                                  List<Map<String, dynamic>>.from(movements);
+                              _totalBalanceNotifier.value = totalBalance;
+                              _monthlyBudgetNotifier.value = monthlyBudget;
+
+                              Navigator.pop(context);
+
+                              if (mounted)
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      isIncome
+                                          ? '✓ Ingreso agregado correctamente'
+                                          : '✓ Gasto registrado correctamente',
+                                    ),
+                                    backgroundColor: isIncome
+                                        ? Colors.green
+                                        : Colors.red,
+                                    duration: const Duration(seconds: 2),
+                                  ),
+                                );
+                              // No hacer refresh inmediato para evitar parpadeo
+                              // El estado local ya está actualizado correctamente
+                            } catch (e) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    'Error creando transacción: $e',
+                                  ),
+                                  backgroundColor: Colors.orange,
+                                ),
+                              );
+                            }
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: isIncome
+                                ? Colors.green.shade500
+                                : Colors.red.shade500,
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            shadowColor:
+                                (isIncome
+                                        ? Colors.green.shade500
+                                        : Colors.red.shade500)
+                                    .withOpacity(0.4),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.check_circle_outline, size: 24),
+                              const SizedBox(width: 12),
+                              Text(
+                                isIncome
+                                    ? 'Confirmar Ingreso'
+                                    : 'Confirmar Gasto',
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-          );
-        },
-      );
-    },
-  );
-}
+            );
+          },
+        );
+      },
+    );
+  }
 
   String _formatDate() {
     final now = DateTime.now();
@@ -3582,10 +3367,7 @@ class _InicioViewState extends State<InicioView> {
               const SizedBox(width: 12),
               const Text(
                 'Nueva Categoría',
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
               ),
             ],
           ),
@@ -3609,7 +3391,9 @@ class _InicioViewState extends State<InicioView> {
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                     borderSide: BorderSide(
-                      color: isIncome ? Colors.green.shade500 : Colors.red.shade500,
+                      color: isIncome
+                          ? Colors.green.shade500
+                          : Colors.red.shade500,
                       width: 2,
                     ),
                   ),
@@ -3632,7 +3416,9 @@ class _InicioViewState extends State<InicioView> {
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                     borderSide: BorderSide(
-                      color: isIncome ? Colors.green.shade500 : Colors.red.shade500,
+                      color: isIncome
+                          ? Colors.green.shade500
+                          : Colors.red.shade500,
                       width: 2,
                     ),
                   ),
@@ -3650,7 +3436,9 @@ class _InicioViewState extends State<InicioView> {
                     Icon(
                       Icons.info_outline,
                       size: 20,
-                      color: isIncome ? Colors.green.shade700 : Colors.red.shade700,
+                      color: isIncome
+                          ? Colors.green.shade700
+                          : Colors.red.shade700,
                     ),
                     const SizedBox(width: 8),
                     Expanded(
@@ -3658,7 +3446,9 @@ class _InicioViewState extends State<InicioView> {
                         'Tipo: ${isIncome ? "Ingreso" : "Gasto"}',
                         style: TextStyle(
                           fontSize: 13,
-                          color: isIncome ? Colors.green.shade700 : Colors.red.shade700,
+                          color: isIncome
+                              ? Colors.green.shade700
+                              : Colors.red.shade700,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -3679,11 +3469,13 @@ class _InicioViewState extends State<InicioView> {
             ElevatedButton.icon(
               onPressed: () async {
                 final name = nameController.text.trim();
-                
+
                 if (name.isEmpty) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                      content: Text('Por favor ingresa un nombre para la categoría'),
+                      content: Text(
+                        'Por favor ingresa un nombre para la categoría',
+                      ),
                       backgroundColor: Colors.orange,
                     ),
                   );
@@ -3694,21 +3486,23 @@ class _InicioViewState extends State<InicioView> {
                 final newCategory = await CategoryService.createCategory(
                   name: name,
                   type: isIncome ? 'income' : 'expense',
-                  description: descriptionController.text.trim().isEmpty 
-                      ? null 
+                  description: descriptionController.text.trim().isEmpty
+                      ? null
                       : descriptionController.text.trim(),
                 );
 
                 if (newCategory != null) {
                   Navigator.pop(dialogContext);
-                  
+
                   // Llamar al callback con la nueva categoría
                   onCategoryCreated(newCategory);
-                  
+
                   if (mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
-                        content: Text('✓ Categoría "$name" creada correctamente'),
+                        content: Text(
+                          '✓ Categoría "$name" creada correctamente',
+                        ),
                         backgroundColor: Colors.green,
                         duration: const Duration(seconds: 2),
                       ),
@@ -3718,7 +3512,9 @@ class _InicioViewState extends State<InicioView> {
                   if (mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
-                        content: Text('Error al crear la categoría. Intenta de nuevo.'),
+                        content: Text(
+                          'Error al crear la categoría. Intenta de nuevo.',
+                        ),
                         backgroundColor: Colors.red,
                       ),
                     );
@@ -3726,7 +3522,9 @@ class _InicioViewState extends State<InicioView> {
                 }
               },
               style: ElevatedButton.styleFrom(
-                backgroundColor: isIncome ? Colors.green.shade500 : Colors.red.shade500,
+                backgroundColor: isIncome
+                    ? Colors.green.shade500
+                    : Colors.red.shade500,
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),

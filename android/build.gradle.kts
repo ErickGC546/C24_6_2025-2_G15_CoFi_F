@@ -39,6 +39,10 @@ subprojects {
     tasks.withType(org.gradle.api.tasks.compile.JavaCompile::class.java).configureEach {
         sourceCompatibility = "11"
         targetCompatibility = "11"
+        // Rely on `sourceCompatibility` and `targetCompatibility` instead of `--release`.
+        // Android Gradle Plugin manages the bootclasspath; do not set `options.release` here.
+        // Suppress the specific warning about obsolete -source/-target options
+        options.compilerArgs.add("-Xlint:-options")
     }
 
     // Configure Kotlin compile tasks if present

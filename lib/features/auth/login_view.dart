@@ -96,9 +96,9 @@ class _LoginViewState extends State<LoginView> {
       }
     } catch (e) {
       print("❌ Error en login con Google: $e");
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Error: $e")),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text("Error: $e")));
     } finally {
       setState(() => _isLoading = false);
     }
@@ -107,9 +107,11 @@ class _LoginViewState extends State<LoginView> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      resizeToAvoidBottomInset: true,
       body: SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(20.0),
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -209,7 +211,7 @@ class _LoginViewState extends State<LoginView> {
                             height: 24,
                           ),
                           const SizedBox(width: 10),
-                          const Text('Google'),
+                          const Text('Ingresa con tu correo de Tecsup'),
                         ],
                       ),
               ),
