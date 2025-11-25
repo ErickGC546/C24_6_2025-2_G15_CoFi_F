@@ -288,6 +288,44 @@ class AiService {
           print('✅ Respuesta backend (status 200): ${response.body}');
           final data = jsonDecode(response.body);
           print('🔎 Parsed response JSON: $data');
+          
+          // Verificar si hay rate limiting o error del proveedor
+          if (data is Map) {
+            // Verificar si hay _notice de rate_limited
+            if (data.containsKey('_notice') && data['_notice'] == 'rate_limited') {
+              print('⚠️ Rate limited detectado en respuesta');
+              return '🤖 El servicio de IA está temporalmente saturado. Por favor, intenta de nuevo en unos momentos.';
+            }
+            
+            // Verificar si el proveedor devolvió error 429
+            if (data.containsKey('provider')) {
+              final provider = data['provider'];
+              if (provider is List && provider.isNotEmpty) {
+                final firstProvider = provider[0];
+                if (firstProvider is Map && firstProvider.containsKey('status')) {
+                  final providerStatus = firstProvider['status'];
+                  if (providerStatus == 429) {
+                    print('⚠️ Provider status 429 detectado');
+                    return '🤖 El servicio de IA está temporalmente saturado. Por favor, intenta de nuevo en unos momentos.';
+                  }
+                }
+              }
+            }
+            
+            // Verificar si la respuesta contiene mensaje de error genérico
+            if (data.containsKey('response')) {
+              final responseText = data['response'];
+              if (responseText is String) {
+                if (responseText.contains('No he podido obtener respuesta') ||
+                    responseText.contains('no obtenido respuesta') ||
+                    responseText.toLowerCase().contains('intenta de nuevo')) {
+                  print('⚠️ Mensaje de error genérico detectado');
+                  return '🤖 El servicio de IA no está disponible en este momento. Por favor, intenta más tarde.';
+                }
+              }
+            }
+          }
+          
           // Helper to extract text robustly from different backend shapes
           String _extractResponseText(dynamic parsed) {
             try {
