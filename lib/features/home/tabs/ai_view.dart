@@ -839,13 +839,24 @@ class _AiViewState extends State<AiView> {
     return text.trim();
   }
 
-  // 🇵🇪 Helper para reemplazar símbolos de dólar por soles peruanos
+  // 🇵🇪 Helper para reemplazar símbolos de dólar y euro por soles peruanos
   String _replaceCurrencySymbols(String text) {
-    // Reemplazar $X por S/ X (con o sin espacio)
+    // Reemplazar €X por S/ X (EURO)
+    text = text.replaceAllMapped(
+      RegExp(r'€\s*(\d+(?:[.,]\d+)?)'),
+      (m) => 'S/ ${m[1]}',
+    );
+    // Reemplazar $X por S/ X (DÓLAR)
     text = text.replaceAllMapped(
       RegExp(r'\$\s*(\d+(?:[.,]\d+)?)'),
       (m) => 'S/ ${m[1]}',
     );
+    // Reemplazar "euros" o "EUR" por "soles" o "PEN"
+    text = text.replaceAll(
+      RegExp(r'\beuros?\b', caseSensitive: false),
+      'soles',
+    );
+    text = text.replaceAll(RegExp(r'\bEUR\b'), 'PEN');
     // Reemplazar "dólares" o "USD" por "soles" o "PEN"
     text = text.replaceAll(
       RegExp(r'\bdólares?\b', caseSensitive: false),
