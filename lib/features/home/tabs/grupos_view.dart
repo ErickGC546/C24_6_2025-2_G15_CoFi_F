@@ -257,10 +257,11 @@ class _GruposViewState extends State<GruposView> {
   }
 
   Future<void> _showCreateGroupDialog() async {
-    final TextEditingController controller = TextEditingController();
+    final TextEditingController nameController = TextEditingController();
+    final TextEditingController descriptionController = TextEditingController();
     final formKey = GlobalKey<FormState>();
 
-    final created = await showDialog<String?>(
+    final result = await showDialog<Map<String, String>?>(
       context: context,
       builder: (context) {
         return Dialog(
@@ -319,40 +320,84 @@ class _GruposViewState extends State<GruposView> {
                   padding: const EdgeInsets.all(20),
                   child: Form(
                     key: formKey,
-                    child: TextFormField(
-                      controller: controller,
-                      autofocus: true,
-                      decoration: InputDecoration(
-                        labelText: 'Nombre del grupo',
-                        hintText: 'Ej. Viaje con amigos',
-                        prefixIcon: Icon(
-                          Icons.group_outlined,
-                          color: Colors.grey.shade600,
+                    child: Column(
+                      children: [
+                        TextFormField(
+                          controller: nameController,
+                          autofocus: true,
+                          decoration: InputDecoration(
+                            labelText: 'Nombre del grupo',
+                            hintText: 'Ej. Viaje con amigos',
+                            prefixIcon: Icon(
+                              Icons.group_outlined,
+                              color: Colors.grey.shade600,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: BorderSide(
+                                color: Colors.grey.shade300,
+                              ),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: BorderSide(
+                                color: Colors.grey.shade300,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: const BorderSide(
+                                color: Color(0xFF4B5563),
+                                width: 2,
+                              ),
+                            ),
+                            filled: true,
+                            fillColor: Colors.grey.shade50,
+                          ),
+                          validator: (v) {
+                            if (v == null || v.trim().isEmpty) {
+                              return 'Ingresa un nombre válido';
+                            }
+                            return null;
+                          },
                         ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(14),
-                          borderSide: BorderSide(color: Colors.grey.shade300),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(14),
-                          borderSide: BorderSide(color: Colors.grey.shade300),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(14),
-                          borderSide: const BorderSide(
-                            color: Color(0xFF4B5563),
-                            width: 2,
+                        const SizedBox(height: 16),
+                        TextFormField(
+                          controller: descriptionController,
+                          maxLines: 3,
+                          decoration: InputDecoration(
+                            labelText: 'Descripción (opcional)',
+                            hintText:
+                                'Ej. Grupo para organizar gastos del viaje',
+                            prefixIcon: Icon(
+                              Icons.description_outlined,
+                              color: Colors.grey.shade600,
+                            ),
+                            alignLabelWithHint: true,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: BorderSide(
+                                color: Colors.grey.shade300,
+                              ),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: BorderSide(
+                                color: Colors.grey.shade300,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide: const BorderSide(
+                                color: Color(0xFF4B5563),
+                                width: 2,
+                              ),
+                            ),
+                            filled: true,
+                            fillColor: Colors.grey.shade50,
                           ),
                         ),
-                        filled: true,
-                        fillColor: Colors.grey.shade50,
-                      ),
-                      validator: (v) {
-                        if (v == null || v.trim().isEmpty) {
-                          return 'Ingresa un nombre válido';
-                        }
-                        return null;
-                      },
+                      ],
                     ),
                   ),
                 ),
@@ -383,7 +428,10 @@ class _GruposViewState extends State<GruposView> {
                       ElevatedButton(
                         onPressed: () {
                           if (formKey.currentState?.validate() ?? false) {
-                            Navigator.of(context).pop(controller.text.trim());
+                            Navigator.of(context).pop({
+                              'name': nameController.text.trim(),
+                              'description': descriptionController.text.trim(),
+                            });
                           }
                         },
                         style: ElevatedButton.styleFrom(
@@ -416,12 +464,17 @@ class _GruposViewState extends State<GruposView> {
       },
     );
 
-    if (created != null && created.isNotEmpty) {
+    if (result != null && result['name']!.isNotEmpty) {
       // Attempt to create group via API
       try {
-        final resp = await _groupService.createGroup(name: created);
+        final resp = await _groupService.createGroup(
+          name: result['name']!,
+          description: result['description']!.isNotEmpty
+              ? result['description']
+              : null,
+        );
         // Use server response name when available
-        final name = resp['name'] ?? created;
+        final name = resp['name'] ?? result['name'];
         if (!mounted) return;
         // Refresh groups list so the newly created group includes server-side
         // fields (id, members, etc.). This ensures the creator appears
@@ -558,130 +611,7 @@ class _GruposViewState extends State<GruposView> {
                     fontWeight: FontWeight.w400,
                   ),
                 ),
-                const SizedBox(height: 28),
-                // Invitaciones pendientes - Diseño mejorado
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: Colors.grey.shade200, width: 1.5),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.04),
-                        blurRadius: 10,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    children: [
-                      Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              gradient: const LinearGradient(
-                                colors: [Color(0xFF6B7280), Color(0xFF4B5563)],
-                              ),
-                              borderRadius: BorderRadius.circular(12),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.1),
-                                  blurRadius: 6,
-                                  offset: const Offset(0, 2),
-                                ),
-                              ],
-                            ),
-                            child: const Icon(
-                              Icons.mail_outline,
-                              color: Colors.white,
-                              size: 22,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Invitaciones Pendientes',
-                                  style: TextStyle(
-                                    fontSize: 17,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.grey.shade800,
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  'Revisa tus invitaciones a grupos',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.grey.shade600,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 6,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.grey.shade100,
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(
-                                color: Colors.grey.shade300,
-                                width: 1,
-                              ),
-                            ),
-                            child: Text(
-                              '0',
-                              style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.grey.shade700,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      Container(
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Colors.grey.shade50,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: Colors.grey.shade200,
-                            width: 1,
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.inbox_outlined,
-                              color: Colors.grey.shade400,
-                              size: 28,
-                            ),
-                            const SizedBox(width: 12),
-                            Text(
-                              'No tienes invitaciones pendientes',
-                              style: TextStyle(
-                                fontWeight: FontWeight.w600,
-                                fontSize: 13,
-                                color: Colors.grey.shade600,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 28),
+                const SizedBox(height: 16),
                 // Botones de acción mejorados
                 Row(
                   children: [
@@ -710,7 +640,7 @@ class _GruposViewState extends State<GruposView> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 40),
+                const SizedBox(height: 20),
                 // Mostrar lista de grupos o texto cuando no hay
                 if (_groups.isEmpty)
                   Container(
@@ -797,7 +727,7 @@ class _GruposViewState extends State<GruposView> {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 8),
                       ListView.separated(
                         shrinkWrap: true,
                         physics: const NeverScrollableScrollPhysics(),
@@ -809,25 +739,6 @@ class _GruposViewState extends State<GruposView> {
                           final memberCount = _extractMemberCount(group);
 
                           // Colores sutiles y elegantes
-                          final colors = [
-                            [
-                              const Color(0xFF8B9DC3),
-                              const Color(0xFF6B7FA8),
-                            ], // Azul grisáceo
-                            [
-                              const Color(0xFFA8B4C8),
-                              const Color(0xFF7D8BA3),
-                            ], // Gris azulado
-                            [
-                              const Color(0xFF9CA3AF),
-                              const Color(0xFF6B7280),
-                            ], // Gris neutro
-                            [
-                              const Color(0xFF94A3B8),
-                              const Color(0xFF64748B),
-                            ], // Slate
-                          ];
-                          final colorSet = colors[index % colors.length];
 
                           return Container(
                             decoration: BoxDecoration(
@@ -849,49 +760,28 @@ class _GruposViewState extends State<GruposView> {
                               color: Colors.transparent,
                               child: InkWell(
                                 borderRadius: BorderRadius.circular(16),
-                                onTap: () {
+                                onTap: () async {
                                   final id =
                                       group['id']?.toString() ??
                                       group['_id']?.toString();
-                                  Navigator.of(context).push(
-                                    MaterialPageRoute(
-                                      builder: (_) => GroupDetailPage(
-                                        groupId: id,
-                                        groupData: group,
-                                      ),
-                                    ),
-                                  );
+                                  final result = await Navigator.of(context)
+                                      .push(
+                                        MaterialPageRoute(
+                                          builder: (_) => GroupDetailPage(
+                                            groupId: id,
+                                            groupData: group,
+                                          ),
+                                        ),
+                                      );
+                                  // Si el resultado indica que se eliminó o salió del grupo, refrescar la lista
+                                  if (result == true && mounted) {
+                                    await _fetchGroups();
+                                  }
                                 },
                                 child: Padding(
                                   padding: const EdgeInsets.all(16),
                                   child: Row(
                                     children: [
-                                      Container(
-                                        padding: const EdgeInsets.all(14),
-                                        decoration: BoxDecoration(
-                                          gradient: LinearGradient(
-                                            colors: colorSet,
-                                          ),
-                                          borderRadius: BorderRadius.circular(
-                                            12,
-                                          ),
-                                          boxShadow: [
-                                            BoxShadow(
-                                              color: colorSet[0].withOpacity(
-                                                0.2,
-                                              ),
-                                              blurRadius: 6,
-                                              offset: const Offset(0, 2),
-                                            ),
-                                          ],
-                                        ),
-                                        child: const Icon(
-                                          Icons.group,
-                                          color: Colors.white,
-                                          size: 28,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 16),
                                       Expanded(
                                         child: Column(
                                           crossAxisAlignment:
@@ -905,6 +795,23 @@ class _GruposViewState extends State<GruposView> {
                                                 color: Colors.grey.shade800,
                                               ),
                                             ),
+                                            if (group['description'] != null &&
+                                                group['description']
+                                                    .toString()
+                                                    .trim()
+                                                    .isNotEmpty) ...[
+                                              const SizedBox(height: 4),
+                                              Text(
+                                                group['description'].toString(),
+                                                style: TextStyle(
+                                                  fontSize: 13,
+                                                  color: Colors.grey.shade600,
+                                                  fontStyle: FontStyle.italic,
+                                                ),
+                                                maxLines: 2,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ],
                                             const SizedBox(height: 6),
                                             Row(
                                               children: [

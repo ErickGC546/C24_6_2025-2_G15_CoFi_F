@@ -11,6 +11,7 @@ class TransactionService {
     required String type,
     required String note,
     String? categoryId,
+    String? goalId,
   }) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) throw Exception("Usuario no autenticado");
@@ -26,7 +27,8 @@ class TransactionService {
         "amount": amount,
         "type": type,
         "note": note,
-        "categoryId": categoryId,
+        if (categoryId != null) "categoryId": categoryId,
+        if (goalId != null) "goalId": goalId,
       }),
     );
 
@@ -38,7 +40,7 @@ class TransactionService {
   }
 
   // ✅ Eliminar transacción
-  static Future<void> deleteTransaction(String id) async {
+  static Future<Map<String, dynamic>> deleteTransaction(String id) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) throw Exception("Usuario no autenticado");
     final token = await user.getIdToken();
@@ -48,7 +50,9 @@ class TransactionService {
       headers: {"Authorization": "Bearer $token"},
     );
 
-    if (response.statusCode != 200) {
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    } else {
       throw Exception("Error al eliminar transacción: ${response.body}");
     }
   }

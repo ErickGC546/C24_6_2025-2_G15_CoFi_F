@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'dart:math';
 import 'dart:async';
 import 'package:cofi/core/services/home_service.dart';
 import 'package:cofi/core/services/metas_service.dart';
 import 'package:cofi/core/services/transaction_service.dart';
 import 'package:cofi/core/services/budget_service.dart';
 import 'package:cofi/core/services/category_service.dart';
+import 'package:cofi/core/services/group_service.dart';
 import 'package:flutter/services.dart';
 
 // Paquete para las acciones de deslizar (swipe)
@@ -14,7 +14,6 @@ import 'package:flutter_slidable/flutter_slidable.dart';
 
 // Importar el widget del micrófono
 import 'package:cofi/core/widgets/microphone_button.dart';
-import 'package:cofi/features/home/tabs/group_detail_page.dart';
 
 class InicioView extends StatefulWidget {
   const InicioView({super.key});
@@ -147,6 +146,13 @@ class _InicioViewState extends State<InicioView> {
 
         accounts = newAccounts;
         _accountsNotifier.value = List<Map<String, dynamic>>.from(newAccounts);
+
+        // ✅ SALDO TOTAL: Obtener del balance de la cuenta (empieza en 0 si no hay cuenta)
+        if (accounts.isNotEmpty) {
+          totalBalance = _toDouble(accounts.first['balance']);
+          _totalBalanceNotifier.value = totalBalance;
+        }
+
         // Mantener la cuenta seleccionada si ya existe, sino seleccionar la primera
         selectedAccountId =
             selectedAccountId ??
@@ -246,6 +252,7 @@ class _InicioViewState extends State<InicioView> {
                 'categoryId': (t['category'] is Map)
                     ? (t['category']['id'] ?? t['category']['_id'])
                     : (t['categoryId'] ?? t['category'] ?? null),
+                'goalId': t['goalId'],
               };
             })
             .cast<Map<String, dynamic>>()
@@ -254,84 +261,269 @@ class _InicioViewState extends State<InicioView> {
         movements = newMovements;
         _movementsNotifier.value = newMovements;
 
-        // Initialize monthlyBudget as the sum of expenses (absolute value)
+        // ✅ PRESUPUESTO: Solo calcular la suma de GASTOS (no afecta el saldo total)
         monthlyBudget = movements.fold(0.0, (sum, m) {
           final amt = _toDouble(m['amount']);
           return sum + (amt < 0 ? amt.abs() : 0.0);
         });
         _monthlyBudgetNotifier.value = monthlyBudget;
 
-        // totalBalance: if a monthly budget is set, treat the budget as the
-        // starting balance and subtract expenses; otherwise, sum all amounts.
-        if (monthlyBudgetGoal > 0) {
-          totalBalance = (monthlyBudgetGoal - monthlyBudget);
-        } else {
-          totalBalance = movements.fold(
-            0.0,
-            (sum, m) => sum + _toDouble(m['amount']),
-          );
+        // ❌ NO recalcular totalBalance aquí
+        // El saldo total ya se calculó desde accounts['balance']
+        // Si no hay cuenta, calcular desde ingresos - gastos solo como fallback
+        if (accounts.isEmpty) {
+          double totalIncome = 0.0;
+          double totalExpenses = 0.0;
+
+          for (var m in movements) {
+            final amt = _toDouble(m['amount']);
+            if (amt >= 0) {
+              totalIncome += amt;
+            } else {
+              totalExpenses += amt.abs();
+            }
+          }
+
+          totalBalance = totalIncome - totalExpenses;
+          _totalBalanceNotifier.value = totalBalance;
         }
-        _totalBalanceNotifier.value = totalBalance;
       }
 
       // Si no vinieron transacciones desde el backend, aún recalcular
       // montos a partir del estado local (puede venir de cache o estado previo)
-      if (transactionsData.isEmpty) {
-        // Recalcular monthlyBudget como suma de gastos actuales
+      if (transactionsData.isEmpty && movements.isNotEmpty) {
+        // ✅ Recalcular monthlyBudget como suma de gastos actuales
         monthlyBudget = movements.fold(0.0, (sum, m) {
           final amt = _toDouble(m['amount']);
           return sum + (amt < 0 ? amt.abs() : 0.0);
         });
         _monthlyBudgetNotifier.value = monthlyBudget;
 
-        if (monthlyBudgetGoal > 0) {
-          totalBalance = (monthlyBudgetGoal - monthlyBudget);
-        } else {
-          totalBalance = movements.fold(
-            0.0,
-            (sum, m) => sum + _toDouble(m['amount']),
-          );
-        }
-        _totalBalanceNotifier.value = totalBalance;
+        // ❌ NO recalcular totalBalance desde presupuesto
+        // El saldo ya viene de accounts o fue calculado arriba
       }
 
-      // Mapear metas (goals)
-      // Obtener metas directamente desde el servicio de metas (/savings)
+      // Mapear metas (goals) - INCLUYE METAS PERSONALES Y DE GRUPOS
       try {
         final goalService = GoalService();
-        final fetchedGoals = await goalService.getGoals();
-        if (fetchedGoals.isNotEmpty) {
-          final mapped = fetchedGoals
-              .map((g) {
-                return {
-                  'id': g['id'] ?? g['_id'],
-                  'title': g['title'] ?? g['name'] ?? 'Meta',
-                  'current': _toDouble(
-                    g['currentAmount'] ??
-                        g['saved'] ??
-                        g['amountSaved'] ??
-                        g['current'] ??
-                        0,
-                  ),
-                  'total': _toDouble(
-                    g['targetAmount'] ??
-                        g['target'] ??
-                        g['goalAmount'] ??
-                        g['amount'] ??
-                        0,
-                  ),
-                };
-              })
-              .cast<Map<String, dynamic>>()
-              .toList();
+        final groupService = GroupService();
 
-          goals = mapped;
-          _goalsNotifier.value = mapped;
-        } else {
-          // No reemplazar metas existentes si la respuesta está vacía
+        // 1. Obtener metas personales
+        final personalGoals = await goalService.getGoals();
+
+        // 2. Obtener todos los grupos del usuario (owner y member)
+        final userGroups = await groupService.getUserGroups();
+
+        // Crear un Set con los IDs de grupos válidos para verificación rápida
+        final validGroupIds = userGroups
+            .map((g) => (g['id'] ?? g['_id'])?.toString())
+            .where((id) => id != null && id.isNotEmpty)
+            .toSet();
+
+        // 3. Obtener las metas de cada grupo VÁLIDO
+        final List<dynamic> allGroupGoals = [];
+        for (final group in userGroups) {
+          final groupId = (group['id'] ?? group['_id'])?.toString();
+          if (groupId != null && groupId.isNotEmpty) {
+            try {
+              final groupSavings = await groupService.getSavings(
+                groupId: groupId,
+              );
+              // Agregar información del grupo a cada meta
+              for (final saving in groupSavings) {
+                allGroupGoals.add({
+                  ...saving,
+                  'groupId': groupId,
+                  'groupName': group['name'] ?? 'Grupo',
+                  'group': group,
+                });
+              }
+            } catch (e) {
+              print('Error cargando metas del grupo $groupId: $e');
+            }
+          }
         }
-      } catch (_) {
-        // Si falla la petición de metas, conservar las metas cargadas previamente
+
+        // 4. Crear un Set con los IDs de metas válidas (para filtrar movimientos)
+        final validGoalIds = <String>{};
+
+        // 5. Crear un mapa para evitar duplicados por ID
+        final Map<String, Map<String, dynamic>> uniqueGoals = {};
+
+        // Agregar metas personales primero (SOLO las que NO son de grupo)
+        for (final g in personalGoals) {
+          final id = (g['id'] ?? g['_id'])?.toString();
+          if (id == null || id.isEmpty) continue;
+
+          // Verificar si esta meta tiene un groupId asociado
+          final goalGroupId =
+              (g['groupId'] ?? g['group']?['id'] ?? g['group']?['_id'])
+                  ?.toString();
+
+          // Si tiene groupId, verificar que el grupo aún exista
+          if (goalGroupId != null && goalGroupId.isNotEmpty) {
+            // Si el grupo NO existe en la lista de grupos válidos, SALTAR esta meta
+            if (!validGroupIds.contains(goalGroupId)) {
+              print(
+                'Meta $id pertenece a grupo eliminado $goalGroupId, se omite',
+              );
+              continue;
+            }
+            // Si el grupo existe, se agregará desde allGroupGoals, no aquí
+            continue;
+          }
+
+          // Solo agregar si es una meta personal pura (sin groupId)
+          uniqueGoals[id] = {
+            'id': id,
+            'title': g['title'] ?? g['name'] ?? 'Meta',
+            'current': _toDouble(
+              g['currentAmount'] ??
+                  g['saved'] ??
+                  g['amountSaved'] ??
+                  g['current'] ??
+                  0,
+            ),
+            'total': _toDouble(
+              g['targetAmount'] ??
+                  g['target'] ??
+                  g['goalAmount'] ??
+                  g['amount'] ??
+                  0,
+            ),
+            'isGroup': false,
+            'groupId': null,
+            'groupName': null,
+          };
+
+          // Agregar a IDs válidos
+          validGoalIds.add(id);
+        }
+
+        // Agregar metas de grupos (solo de grupos VÁLIDOS)
+        for (final g in allGroupGoals) {
+          final id = (g['id'] ?? g['_id'])?.toString();
+          if (id == null || id.isEmpty) continue;
+
+          // Verificar que el grupo de esta meta siga siendo válido
+          final groupId =
+              (g['groupId'] ?? g['group']?['id'] ?? g['group']?['_id'])
+                  ?.toString();
+
+          if (groupId == null || !validGroupIds.contains(groupId)) {
+            print('Meta $id omitida: grupo $groupId no válido');
+            continue;
+          }
+
+          final groupName = (g['group']?['name'] ?? g['groupName'])?.toString();
+
+          // Agregar/sobrescribir meta con info del grupo
+          uniqueGoals[id] = {
+            'id': id,
+            'title': g['title'] ?? g['name'] ?? 'Meta',
+            'current': _toDouble(
+              g['currentAmount'] ??
+                  g['saved'] ??
+                  g['amountSaved'] ??
+                  g['current'] ??
+                  0,
+            ),
+            'total': _toDouble(
+              g['targetAmount'] ??
+                  g['target'] ??
+                  g['goalAmount'] ??
+                  g['amount'] ??
+                  0,
+            ),
+            'isGroup': true,
+            'groupId': groupId,
+            'groupName': groupName ?? 'Grupo',
+          };
+
+          // Agregar a IDs válidos
+          validGoalIds.add(id);
+        }
+
+        // Convertir el mapa a lista
+        final mappedGoals = uniqueGoals.values.toList();
+
+        if (mappedGoals.isNotEmpty) {
+          goals = mappedGoals;
+          _goalsNotifier.value = mappedGoals;
+        } else {
+          // Si no hay metas, limpiar
+          goals = [];
+          _goalsNotifier.value = [];
+        }
+
+        // 6. FILTRAR MOVIMIENTOS: Eliminar transacciones relacionadas con metas inexistentes
+        if (validGoalIds.isNotEmpty) {
+          movements = movements.where((movement) {
+            try {
+              final title = (movement['title'] ?? '').toString().toLowerCase();
+              final note = (movement['note'] ?? '').toString().toLowerCase();
+
+              // Palabras clave que indican que es un movimiento de meta
+              final isGoalMovement =
+                  title.contains('ahorro') ||
+                  title.contains('meta') ||
+                  title.contains('retiro') ||
+                  note.contains('ahorro') ||
+                  note.contains('meta') ||
+                  note.contains('retiro');
+
+              if (!isGoalMovement) {
+                // No es un movimiento de meta, mantenerlo
+                return true;
+              }
+
+              // Es un movimiento de meta, verificar si la meta aún existe
+              // Intentar extraer el ID o título de la meta del movimiento
+              final goalId = movement['goalId']?.toString();
+
+              if (goalId != null && goalId.isNotEmpty) {
+                // Tiene goalId, verificar si está en metas válidas
+                return validGoalIds.contains(goalId);
+              }
+
+              // Si no tiene goalId, buscar por título de meta en el texto
+              for (final goal in mappedGoals) {
+                final goalTitle = (goal['title'] ?? '')
+                    .toString()
+                    .toLowerCase();
+                if (title.contains(goalTitle) || note.contains(goalTitle)) {
+                  // Encontró la meta, mantener el movimiento
+                  return true;
+                }
+              }
+
+              // No se encontró la meta asociada, eliminar movimiento
+              print('Movimiento eliminado: meta no encontrada - $title');
+              return false;
+            } catch (e) {
+              print('Error filtrando movimiento: $e');
+              return true; // En caso de error, mantener el movimiento
+            }
+          }).toList();
+
+          // Actualizar el notifier de movimientos
+          _movementsNotifier.value = List<Map<String, dynamic>>.from(movements);
+
+          // ✅ Recalcular solo los GASTOS del presupuesto después de filtrar
+          monthlyBudget = movements.fold(0.0, (sum, m) {
+            final amt = _toDouble(m['amount']);
+            return sum + (amt < 0 ? amt.abs() : 0.0);
+          });
+          _monthlyBudgetNotifier.value = monthlyBudget;
+
+          // ❌ NO recalcular totalBalance desde movimientos
+          // El saldo total ya está correcto desde accounts['balance']
+        }
+      } catch (e) {
+        print('Error cargando metas: $e');
+        // En caso de error, asegurar que las listas estén vacías
+        goals = [];
+        _goalsNotifier.value = [];
       }
 
       // Si no tiene metas, dejamos una lista vacía (la UI mostrará mensaje)
@@ -371,7 +563,7 @@ class _InicioViewState extends State<InicioView> {
             16,
             16,
             16,
-            MediaQuery.of(context).viewPadding.bottom + 120,
+            MediaQuery.of(context).viewPadding.bottom + 80,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -420,12 +612,17 @@ class _InicioViewState extends State<InicioView> {
               _buildIncomeByCategory(),
               const SizedBox(height: 20),
               _buildWeeklyExpenses(),
-              const SizedBox(height: 80),
+              const SizedBox(height: 20),
             ],
           ),
         ),
       ),
-      floatingActionButton: const MicrophoneButton(),
+      floatingActionButton: MicrophoneButton(
+        onTranscriptionComplete: () {
+          // Recargar datos después de crear transacción por voz
+          _loadHomeData(showLoading: false);
+        },
+      ),
       floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
     );
   }
@@ -754,11 +951,12 @@ class _InicioViewState extends State<InicioView> {
                           categoryId: null,
                         );
                         if (success) {
+                          // ✅ SOLO actualizar el presupuesto, NO el saldo total
                           monthlyBudgetGoal = value;
                           _monthlyBudgetGoalNotifier.value = value;
 
-                          totalBalance = (monthlyBudgetGoal - monthlyBudget);
-                          _totalBalanceNotifier.value = totalBalance;
+                          // ❌ NO modificar totalBalance aquí
+                          // El saldo total es independiente del presupuesto
 
                           try {
                             await _loadHomeData(showLoading: false);
@@ -824,31 +1022,51 @@ class _InicioViewState extends State<InicioView> {
                                   onPressed: () async {
                                     Navigator.pop(dialogCtx); // cerrar diálogo
 
-                                    // Resetear el presupuesto localmente
-                                    monthlyBudgetGoal = 0.0;
-                                    _monthlyBudgetGoalNotifier.value = 0.0;
+                                    try {
+                                      // ✅ Eliminar del backend
+                                      final bs = BudgetService();
+                                      await bs.deleteMonthlyBudget();
 
-                                    // Recalcular balance
-                                    totalBalance = movements.fold(
-                                      0.0,
-                                      (sum, m) => sum + _toDouble(m['amount']),
-                                    );
-                                    _totalBalanceNotifier.value = totalBalance;
+                                      // ✅ Resetear solo el presupuesto local
+                                      monthlyBudgetGoal = 0.0;
+                                      _monthlyBudgetGoalNotifier.value = 0.0;
 
-                                    Navigator.pop(ctx); // cerrar modal
+                                      // ❌ NO recalcular totalBalance
+                                      // El saldo total es independiente del presupuesto
 
-                                    if (mounted) {
-                                      ScaffoldMessenger.of(
-                                        context,
-                                      ).showSnackBar(
-                                        const SnackBar(
-                                          content: Text(
-                                            'Presupuesto eliminado correctamente',
+                                      Navigator.pop(ctx); // cerrar modal
+
+                                      if (mounted) {
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          const SnackBar(
+                                            content: Text(
+                                              '✓ Presupuesto eliminado correctamente',
+                                            ),
+                                            backgroundColor: Colors.green,
+                                            duration: Duration(seconds: 2),
                                           ),
-                                          backgroundColor: Colors.orange,
-                                          duration: Duration(seconds: 2),
-                                        ),
-                                      );
+                                        );
+                                      }
+                                    } catch (e) {
+                                      Navigator.pop(ctx); // cerrar modal
+
+                                      if (mounted) {
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          SnackBar(
+                                            content: Text(
+                                              'Error al eliminar presupuesto: $e',
+                                            ),
+                                            backgroundColor: Colors.red,
+                                            duration: const Duration(
+                                              seconds: 3,
+                                            ),
+                                          ),
+                                        );
+                                      }
                                     }
                                   },
                                   style: TextButton.styleFrom(
@@ -1381,12 +1599,50 @@ class _InicioViewState extends State<InicioView> {
     return ValueListenableBuilder<List<Map<String, dynamic>>>(
       valueListenable: _movementsNotifier,
       builder: (context, movementsList, _) {
+        // Si no hay movimientos, mostrar mensaje
+        if (movementsList.isEmpty) {
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Movimientos Recientes',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(32.0),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.receipt_long_outlined,
+                        size: 48,
+                        color: Colors.grey.shade400,
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'No hay movimientos',
+                        style: TextStyle(
+                          color: Colors.grey.shade600,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          );
+        }
+
         // Calcular altura máxima para 3 elementos (aproximadamente 80px cada uno)
-        const double itemHeight = 80.0;
+
         const int maxVisibleItems = 3;
-        final double maxHeight = itemHeight * maxVisibleItems;
 
         return Column(
+          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
@@ -1397,115 +1653,91 @@ class _InicioViewState extends State<InicioView> {
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 if (movementsList.length > maxVisibleItems)
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.blue.shade50,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      '${movementsList.length} total',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.blue.shade700,
-                        fontWeight: FontWeight.w600,
+                  InkWell(
+                    onTap: () => _showAllMovementsModal(context, movementsList),
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        children: [
+                          Text(
+                            '${movementsList.length} total',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.blue.shade700,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Icon(
+                            Icons.arrow_forward_ios,
+                            size: 12,
+                            color: Colors.blue.shade700,
+                          ),
+                        ],
                       ),
                     ),
                   ),
               ],
             ),
             const SizedBox(height: 8),
-            // Container con altura máxima y scroll independiente
-            Container(
-              constraints: BoxConstraints(
-                maxHeight: movementsList.isEmpty
-                    ? 100
-                    : (movementsList.length > maxVisibleItems
-                          ? maxHeight
-                          : movementsList.length * itemHeight),
-              ),
-              child: movementsList.isEmpty
-                  ? Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(32.0),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.receipt_long_outlined,
-                              size: 48,
-                              color: Colors.grey.shade400,
-                            ),
-                            const SizedBox(height: 12),
-                            Text(
-                              'No hay movimientos',
-                              style: TextStyle(
-                                color: Colors.grey.shade600,
-                                fontSize: 14,
-                              ),
-                            ),
-                          ],
-                        ),
+            // ListView con shrinkWrap sin Container envolvente
+            ListView.builder(
+              padding: EdgeInsets.zero,
+              physics: const NeverScrollableScrollPhysics(),
+              shrinkWrap: true,
+              itemCount: movementsList.length > maxVisibleItems
+                  ? maxVisibleItems
+                  : movementsList.length,
+              itemBuilder: (context, index) {
+                final movement = movementsList[index];
+                return Slidable(
+                  key: Key(
+                    (movement['title'] ?? '') + (movement['date'] ?? ''),
+                  ),
+                  startActionPane: ActionPane(
+                    motion: const DrawerMotion(),
+                    children: [
+                      SlidableAction(
+                        onPressed: (context) {
+                          _showEditTransactionModal(context, index);
+                        },
+                        backgroundColor: Colors.blue,
+                        foregroundColor: Colors.white,
+                        icon: Icons.edit,
+                        label: 'Editar',
                       ),
-                    )
-                  : ListView.builder(
-                      padding: EdgeInsets.zero,
-                      // Habilitar scroll solo cuando hay más de 6 elementos
-                      physics: movementsList.length > maxVisibleItems
-                          ? const AlwaysScrollableScrollPhysics()
-                          : const NeverScrollableScrollPhysics(),
-                      shrinkWrap: true,
-                      itemCount: movementsList.length,
-                      itemBuilder: (context, index) {
-                        final movement = movementsList[index];
-                        return Slidable(
-                          key: Key(
-                            (movement['title'] ?? '') +
-                                (movement['date'] ?? ''),
-                          ),
-
-                          startActionPane: ActionPane(
-                            motion: const DrawerMotion(),
-                            children: [
-                              SlidableAction(
-                                onPressed: (context) {
-                                  _showEditTransactionModal(context, index);
-                                },
-                                backgroundColor: Colors.blue,
-                                foregroundColor: Colors.white,
-                                icon: Icons.edit,
-                                label: 'Editar',
-                              ),
-                            ],
-                          ),
-
-                          endActionPane: ActionPane(
-                            motion: const DrawerMotion(),
-                            children: [
-                              SlidableAction(
-                                onPressed: (context) {
-                                  _deleteMovement(context, index);
-                                },
-                                backgroundColor: const Color(0xFFFE4A49),
-                                foregroundColor: Colors.white,
-                                icon: Icons.delete,
-                                label: 'Eliminar',
-                              ),
-                            ],
-                          ),
-
-                          child: _MovementItem(
-                            title: movement['title'],
-                            amount: movement['amount'],
-                            date: movement['date'],
-                            category: movement['category'],
-                          ),
-                        );
-                      },
-                    ),
+                    ],
+                  ),
+                  endActionPane: ActionPane(
+                    motion: const DrawerMotion(),
+                    children: [
+                      SlidableAction(
+                        onPressed: (context) {
+                          _deleteMovement(context, index);
+                        },
+                        backgroundColor: const Color(0xFFFE4A49),
+                        foregroundColor: Colors.white,
+                        icon: Icons.delete,
+                        label: 'Eliminar',
+                      ),
+                    ],
+                  ),
+                  child: _MovementItem(
+                    title: movement['title'],
+                    amount: movement['amount'],
+                    date: movement['date'],
+                    category: movement['category'],
+                  ),
+                );
+              },
             ),
           ],
         );
@@ -1663,60 +1895,26 @@ class _InicioViewState extends State<InicioView> {
     final percent = (progress * 100).clamp(0, 100).round();
     final remaining = (total - current).clamp(0.0, double.infinity);
 
-    // Colores dinámicos según el progreso
-    final MaterialColor primaryColor = progress >= 1.0
-        ? Colors.green
-        : progress >= 0.7
-        ? Colors.blue
-        : progress >= 0.4
-        ? Colors.orange
-        : Colors.purple;
+    // Obtener información de la meta
+    final goal = goals[index];
+    final isGroup = goal['isGroup'] == true;
+    final groupName = goal['groupName']?.toString() ?? 'Grupo';
+
+    // Colores dinámicos según el progreso y si es grupal
+    final MaterialColor primaryColor = isGroup
+        ? Colors.purple
+        : (progress >= 1.0
+              ? Colors.green
+              : progress >= 0.7
+              ? Colors.blue
+              : progress >= 0.4
+              ? Colors.orange
+              : Colors.purple);
 
     return GestureDetector(
       onTap: () {
-        try {
-          final Map<String, dynamic> g = (goals.length > index)
-              ? goals[index]
-              : {};
-
-          // Try common keys where a group id might be stored
-          dynamic maybeGroup =
-              g['groupId'] ?? g['group'] ?? g['group_id'] ?? g['groupId'];
-          String? groupId;
-
-          if (maybeGroup != null) {
-            if (maybeGroup is Map) {
-              groupId =
-                  (maybeGroup['id'] ??
-                          maybeGroup['_id'] ??
-                          maybeGroup['groupId'])
-                      ?.toString();
-            } else {
-              groupId = maybeGroup.toString();
-            }
-          }
-
-          // Fallback: if 'group' is nested under other keys
-          if ((groupId == null || groupId.isEmpty) && g['group'] is Map) {
-            final nested = g['group'] as Map;
-            groupId = (nested['id'] ?? nested['_id'])?.toString();
-          }
-
-          if (groupId != null && groupId.isNotEmpty) {
-            Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => GroupDetailPage(groupId: groupId),
-              ),
-            );
-          } else {
-            // Default: abrir modal para agregar/retirar en la meta
-            // en lugar de navegar a la vista completa (evita fondo negro)
-            _showGoalFormModal(context, index);
-          }
-        } catch (_) {
-          // On any error, fallback to showing the goal form modal
-          _showGoalFormModal(context, index);
-        }
+        // Siempre abrir el modal para ahorrar/retirar
+        _showGoalFormModal(context, index);
       },
       child: Container(
         width: cardWidth,
@@ -1749,15 +1947,58 @@ class _InicioViewState extends State<InicioView> {
               right: -10,
               top: -10,
               child: Icon(
-                Icons.savings,
+                isGroup ? Icons.group : Icons.savings,
                 size: 100,
                 color: primaryColor.withOpacity(0.05),
               ),
             ),
+            // Badge de grupo si es meta grupal
+            if (isGroup)
+              Positioned(
+                top: 12,
+                right: 12,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 5,
+                  ),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [primaryColor.shade400, primaryColor.shade600],
+                    ),
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: [
+                      BoxShadow(
+                        color: primaryColor.withOpacity(0.3),
+                        blurRadius: 4,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.group, size: 14, color: Colors.white),
+                      const SizedBox(width: 4),
+                      Text(
+                        groupName.length > 12
+                            ? '${groupName.substring(0, 12)}...'
+                            : groupName,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             // Contenido principal
             Padding(
-              padding: const EdgeInsets.all(18),
+              padding: const EdgeInsets.all(16),
               child: Column(
+                mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Row(
@@ -1791,49 +2032,54 @@ class _InicioViewState extends State<InicioView> {
                               overflow: TextOverflow.ellipsis,
                             ),
                             const SizedBox(height: 2),
-                            Text(
-                              'Meta ${index + 1} de $totalGoals',
-                              style: TextStyle(
-                                color: Colors.grey.shade600,
-                                fontSize: 11,
-                              ),
+                            Row(
+                              children: [
+                                Text(
+                                  'Meta ${index + 1} de $totalGoals',
+                                  style: TextStyle(
+                                    color: Colors.grey.shade600,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 3,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    gradient: LinearGradient(
+                                      colors: [
+                                        primaryColor.shade400,
+                                        primaryColor.shade600,
+                                      ],
+                                    ),
+                                    borderRadius: BorderRadius.circular(20),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: primaryColor.withOpacity(0.3),
+                                        blurRadius: 4,
+                                        offset: const Offset(0, 2),
+                                      ),
+                                    ],
+                                  ),
+                                  child: Text(
+                                    '$percent%',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
-                        ),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 5,
-                        ),
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [
-                              primaryColor.shade400,
-                              primaryColor.shade600,
-                            ],
-                          ),
-                          borderRadius: BorderRadius.circular(20),
-                          boxShadow: [
-                            BoxShadow(
-                              color: primaryColor.withOpacity(0.3),
-                              blurRadius: 4,
-                              offset: const Offset(0, 2),
-                            ),
-                          ],
-                        ),
-                        child: Text(
-                          '$percent%',
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 10),
                   // Barra de progreso moderna
                   ClipRRect(
                     borderRadius: BorderRadius.circular(12),
@@ -1870,7 +2116,7 @@ class _InicioViewState extends State<InicioView> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 10),
+                  const SizedBox(height: 8),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -1938,7 +2184,7 @@ class _InicioViewState extends State<InicioView> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   // Acciones removidas: Retirar y Ahorrar (eliminadas para evitar overflow visual)
                   const SizedBox.shrink(),
                 ],
@@ -1950,17 +2196,213 @@ class _InicioViewState extends State<InicioView> {
     );
   }
 
+  /// --- MODAL PARA MOSTRAR TODOS LOS MOVIMIENTOS ---
+  void _showAllMovementsModal(
+    BuildContext context,
+    List<Map<String, dynamic>> movementsList,
+  ) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (modalContext) {
+        return Container(
+          height: MediaQuery.of(context).size.height * 0.85,
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+          ),
+          child: Column(
+            children: [
+              // Cabecera del modal
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Colors.blue.shade600, Colors.blue.shade400],
+                  ),
+                  borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(25),
+                  ),
+                ),
+                child: SafeArea(
+                  bottom: false,
+                  child: Column(
+                    children: [
+                      // Barra de arrastre
+                      Container(
+                        width: 40,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.5),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Icon(
+                              Icons.receipt_long,
+                              color: Colors.white,
+                              size: 24,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Todos los Movimientos',
+                                  style: TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                Text(
+                                  '${movementsList.length} registros',
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: Colors.white.withOpacity(0.9),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: () => Navigator.pop(modalContext),
+                            icon: const Icon(Icons.close, color: Colors.white),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              // Lista de movimientos
+              Expanded(
+                child: movementsList.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.receipt_long_outlined,
+                              size: 64,
+                              color: Colors.grey.shade300,
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              'No hay movimientos',
+                              style: TextStyle(
+                                fontSize: 16,
+                                color: Colors.grey.shade600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
+                        itemCount: movementsList.length,
+                        itemBuilder: (context, index) {
+                          final movement = movementsList[index];
+                          return Slidable(
+                            key: Key(
+                              (movement['id'] ?? '').toString() +
+                                  (movement['date'] ?? ''),
+                            ),
+                            startActionPane: ActionPane(
+                              motion: const DrawerMotion(),
+                              children: [
+                                SlidableAction(
+                                  onPressed: (ctx) {
+                                    Navigator.pop(modalContext); // Cerrar modal
+                                    _showEditTransactionModal(context, index);
+                                  },
+                                  backgroundColor: Colors.blue,
+                                  foregroundColor: Colors.white,
+                                  icon: Icons.edit,
+                                  label: 'Editar',
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ],
+                            ),
+                            endActionPane: ActionPane(
+                              motion: const DrawerMotion(),
+                              children: [
+                                SlidableAction(
+                                  onPressed: (ctx) {
+                                    Navigator.pop(modalContext); // Cerrar modal
+                                    _deleteMovement(context, index);
+                                  },
+                                  backgroundColor: const Color(0xFFFE4A49),
+                                  foregroundColor: Colors.white,
+                                  icon: Icons.delete,
+                                  label: 'Eliminar',
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ],
+                            ),
+                            child: Container(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withOpacity(0.05),
+                                    blurRadius: 4,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: _MovementItem(
+                                title: movement['title'],
+                                amount: movement['amount'],
+                                date: movement['date'],
+                                category: movement['category'],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   /// --- FUNCIÓN PARA ELIMINAR UN MOVIMIENTO ---
   void _deleteMovement(BuildContext parentContext, int index) {
     final deletedMovement = movements[index];
     final id = deletedMovement['id'] as String?;
 
+    // ✅ VERIFICAR goalId directamente (más confiable)
+    final goalId = deletedMovement['goalId']?.toString();
+    final hasGoal = goalId != null && goalId.isNotEmpty;
+    final title = (deletedMovement['title'] ?? '').toString();
+
     showDialog(
       context: parentContext,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Eliminar movimiento'),
-        content: const Text(
-          '¿Estás seguro de que deseas eliminar este movimiento?',
+        content: Text(
+          hasGoal
+              ? '¿Estás seguro de que deseas eliminar este movimiento de meta?\n\n"$title"\n\nEsto ajustará automáticamente el monto de la meta.'
+              : '¿Estás seguro de que deseas eliminar este movimiento?',
         ),
         actions: [
           TextButton(
@@ -1972,40 +2414,167 @@ class _InicioViewState extends State<InicioView> {
               Navigator.pop(dialogContext);
               try {
                 if (id != null) {
-                  await TransactionService.deleteTransaction(id);
+                  // ✅ El backend devuelve el nuevo balance después de eliminar
+                  final response = await TransactionService.deleteTransaction(
+                    id,
+                  );
+
+                  // ✅ Obtener el nuevo balance del backend
+                  final newBalance = response['newBalance'];
+                  if (newBalance != null) {
+                    totalBalance = _toDouble(newBalance);
+                    _totalBalanceNotifier.value = totalBalance;
+
+                    // Actualizar balance en accounts
+                    if (accounts.isNotEmpty) {
+                      accounts[0]['balance'] = totalBalance;
+                      _accountsNotifier.value = List<Map<String, dynamic>>.from(
+                        accounts,
+                      );
+                    }
+                  }
                 }
 
                 if (!mounted) return;
 
-                // Update local lists and notifiers without triggering a full rebuild
+                // ✅ Verificar si este movimiento está asociado a una meta
+                final goalId = deletedMovement['goalId']?.toString();
+                final title = (deletedMovement['title'] ?? '')
+                    .toString()
+                    .toLowerCase();
                 final double amount = _toDouble(deletedMovement['amount']);
-                totalBalance -= amount;
+
+                // Si es un movimiento de meta, ajustar el monto guardado
+                if (goalId != null && goalId.isNotEmpty) {
+                  try {
+                    final goalService = GoalService();
+
+                    // Encontrar la meta en la lista local
+                    final goalIndex = goals.indexWhere(
+                      (g) =>
+                          (g['id']?.toString() ?? g['_id']?.toString()) ==
+                          goalId,
+                    );
+
+                    if (goalIndex != -1) {
+                      final goal = goals[goalIndex];
+                      final currentAmount = _toDouble(goal['current'] ?? 0);
+
+                      // ✅ LÓGICA CORRECTA:
+                      // Si amount < 0: Era un AHORRO (el saldo bajó y la meta subió)
+                      //   Al eliminar: meta BAJA (restar abs), saldo SUBE (auto con totalBalance -= amount)
+                      // Si amount > 0: Era un RETIRO (el saldo subió y la meta bajó)
+                      //   Al eliminar: meta SUBE (sumar), saldo BAJA (auto con totalBalance -= amount)
+                      double newAmount = currentAmount;
+                      if (amount < 0) {
+                        // Era un ahorro, revertir RESTANDO de la meta
+                        newAmount = (currentAmount - amount.abs()).clamp(
+                          0.0,
+                          double.infinity,
+                        );
+                      } else {
+                        // Era un retiro, revertir SUMANDO a la meta
+                        newAmount = currentAmount + amount;
+                      }
+
+                      // Actualizar la meta en el backend
+                      await goalService.updateGoal(goalId, {
+                        'currentAmount': newAmount,
+                      });
+
+                      // Actualizar localmente
+                      goal['current'] = newAmount;
+                      goals[goalIndex] = goal;
+                      _goalsNotifier.value = List<Map<String, dynamic>>.from(
+                        goals,
+                      );
+                    }
+                  } catch (e) {
+                    print('Error actualizando meta al eliminar movimiento: $e');
+                  }
+                } else if (title.contains('ahorro') ||
+                    title.contains('retiro')) {
+                  // Intentar encontrar la meta por el título del movimiento
+                  try {
+                    final goalService = GoalService();
+
+                    for (var i = 0; i < goals.length; i++) {
+                      final goalTitle = (goals[i]['title'] ?? '')
+                          .toString()
+                          .toLowerCase();
+                      if (title.contains(goalTitle)) {
+                        final goal = goals[i];
+                        final currentAmount = _toDouble(goal['current'] ?? 0);
+                        final goalIdStr =
+                            (goal['id']?.toString() ?? goal['_id']?.toString());
+
+                        if (goalIdStr == null || goalIdStr.isEmpty) continue;
+
+                        // ✅ Misma lógica: revertir el movimiento eliminado
+                        double newAmount = currentAmount;
+                        if (amount < 0) {
+                          // Era un ahorro, revertir RESTANDO de la meta
+                          newAmount = (currentAmount - amount.abs()).clamp(
+                            0.0,
+                            double.infinity,
+                          );
+                        } else {
+                          // Era un retiro, revertir SUMANDO a la meta
+                          newAmount = currentAmount + amount;
+                        }
+
+                        await goalService.updateGoal(goalIdStr, {
+                          'currentAmount': newAmount,
+                        });
+
+                        goal['current'] = newAmount;
+                        goals[i] = goal;
+                        _goalsNotifier.value = List<Map<String, dynamic>>.from(
+                          goals,
+                        );
+                        break;
+                      }
+                    }
+                  } catch (e) {
+                    print(
+                      'Error actualizando meta por título al eliminar movimiento: $e',
+                    );
+                  }
+                }
+
+                // ✅ Actualizar PRESUPUESTO: Solo restar si era un gasto (amount < 0)
                 if (amount < 0) {
                   monthlyBudget -= amount.abs();
+                  _monthlyBudgetNotifier.value = monthlyBudget;
                 }
+
                 movements.removeAt(index);
                 _movementsNotifier.value = List<Map<String, dynamic>>.from(
                   movements,
                 );
-                _totalBalanceNotifier.value = totalBalance;
-                _monthlyBudgetNotifier.value = monthlyBudget;
-                if (mounted)
+
+                if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Movimiento eliminado correctamente'),
-                      backgroundColor: Colors.red,
+                    SnackBar(
+                      content: Text(
+                        '✓ Movimiento eliminado\nNuevo saldo: S/ ${totalBalance.toStringAsFixed(2)}',
+                      ),
+                      backgroundColor: Colors.green,
+                      duration: const Duration(seconds: 3),
                     ),
                   );
-                // refresh to reflect backend state (silent refresh, no spinner)
-                if (mounted) await _loadHomeData(showLoading: false);
+                }
+
+                // ❌ NO llamar _loadHomeData aquí - ya tenemos el balance actualizado
               } catch (e) {
-                if (mounted)
+                if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text('Error eliminando: $e'),
                       backgroundColor: Colors.orange,
                     ),
                   );
+                }
               }
             },
             child: const Text('Eliminar'),
@@ -2019,6 +2588,7 @@ class _InicioViewState extends State<InicioView> {
   void _showEditTransactionModal(BuildContext context, int index) {
     final originalMovement = movements[index];
     final double originalAmount = originalMovement['amount'];
+    final String? originalGoalId = originalMovement['goalId']?.toString();
 
     final montoController = TextEditingController(
       text: originalAmount.abs().toStringAsFixed(2),
@@ -2073,7 +2643,10 @@ class _InicioViewState extends State<InicioView> {
                 padding: EdgeInsets.only(
                   left: 24,
                   right: 24,
-                  bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+                  bottom:
+                      MediaQuery.of(context).viewInsets.bottom +
+                      MediaQuery.of(context).viewPadding.bottom +
+                      24,
                   top: 24,
                 ),
                 child: SingleChildScrollView(
@@ -2090,6 +2663,45 @@ class _InicioViewState extends State<InicioView> {
                         ),
                       ),
                       const SizedBox(height: 20),
+                      // ✅ Mostrar badge si es movimiento de meta
+                      if (originalGoalId != null &&
+                          originalGoalId.isNotEmpty) ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            vertical: 8,
+                            horizontal: 16,
+                          ),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [
+                                Colors.purple.shade400,
+                                Colors.purple.shade600,
+                              ],
+                            ),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.savings,
+                                size: 16,
+                                color: Colors.white,
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Movimiento de Meta',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
                       // Título con ícono y gradiente
                       Container(
                         padding: const EdgeInsets.symmetric(
@@ -2315,6 +2927,7 @@ class _InicioViewState extends State<InicioView> {
 
                             try {
                               if (id != null) {
+                                // ✅ El backend devuelve el nuevo balance después de actualizar
                                 final updated =
                                     await TransactionService.updateTransaction(
                                       id: id,
@@ -2324,25 +2937,32 @@ class _InicioViewState extends State<InicioView> {
                                       categoryId: categoriaSeleccionada,
                                     );
 
-                                // Update local model and notifiers without a full rebuild
-                                final amountDifference =
-                                    newAmount - originalAmount;
-                                totalBalance += amountDifference;
+                                // ✅ Obtener el nuevo balance del backend
+                                final newBalance = updated['newBalance'];
+                                if (newBalance != null) {
+                                  totalBalance = _toDouble(newBalance);
+                                  _totalBalanceNotifier.value = totalBalance;
 
-                                if (originalAmount < 0)
-                                  monthlyBudget -= originalAmount.abs();
-                                if (!isIncome) monthlyBudget += newMonto;
+                                  // Actualizar balance en accounts
+                                  if (accounts.isNotEmpty) {
+                                    accounts[0]['balance'] = totalBalance;
+                                    _accountsNotifier.value =
+                                        List<Map<String, dynamic>>.from(
+                                          accounts,
+                                        );
+                                  }
+                                }
 
-                                final rawDate =
-                                    updated['occurredAt'] ??
-                                    updated['createdAt'];
-
+                                // ✅ RECALCULAR PRESUPUESTO DESDE CERO
+                                // Actualizar el movimiento editado localmente primero
                                 movements[index] = {
                                   'id': updated['id'] ?? updated['_id'] ?? id,
                                   'title': descripcionController.text.trim(),
                                   'amount': newAmount,
                                   'date': _formatDisplayDate(
-                                    rawDate ?? _formatDate(),
+                                    updated['occurredAt'] ??
+                                        updated['createdAt'] ??
+                                        _formatDate(),
                                   ),
                                   'category':
                                       (categories.firstWhere(
@@ -2353,49 +2973,107 @@ class _InicioViewState extends State<InicioView> {
                                       )['name']) ??
                                       categoriaSeleccionada,
                                   'categoryId': categoriaSeleccionada,
+                                  'goalId': originalGoalId,
                                 };
-                                _movementsNotifier.value =
-                                    List<Map<String, dynamic>>.from(movements);
-                                _totalBalanceNotifier.value = totalBalance;
+
+                                // Recalcular presupuesto sumando TODOS los gastos actuales
+                                monthlyBudget = movements.fold(0.0, (sum, m) {
+                                  final amt = _toDouble(m['amount']);
+                                  return sum + (amt < 0 ? amt.abs() : 0.0);
+                                });
                                 _monthlyBudgetNotifier.value = monthlyBudget;
-                              } else {
-                                // If no id, just update locally
-                                final amountDifference =
-                                    newAmount - originalAmount;
-                                totalBalance += amountDifference;
-                                movements[index] = {
-                                  'title': descripcionController.text.trim(),
-                                  'amount': newAmount,
-                                  'date': _formatDate(),
-                                  'category':
-                                      (categories.firstWhere(
-                                        (c) =>
-                                            (c['id'] ?? '').toString() ==
-                                            categoriaSeleccionada,
-                                        orElse: () => {},
-                                      )['name']) ??
-                                      categoriaSeleccionada,
-                                  'categoryId': categoriaSeleccionada,
-                                };
+
+                                // ✅ AJUSTAR META SI ES MOVIMIENTO DE META
+                                if (originalGoalId != null &&
+                                    originalGoalId.isNotEmpty) {
+                                  try {
+                                    final goalService = GoalService();
+                                    final goalIndex = goals.indexWhere(
+                                      (g) =>
+                                          (g['id']?.toString() ??
+                                              g['_id']?.toString()) ==
+                                          originalGoalId,
+                                    );
+
+                                    if (goalIndex != -1) {
+                                      final goal = goals[goalIndex];
+                                      final currentAmount = _toDouble(
+                                        goal['current'] ?? 0,
+                                      );
+
+                                      // Calcular el nuevo monto de la meta
+                                      double adjustedAmount = currentAmount;
+
+                                      // 1. Revertir el movimiento original
+                                      if (originalAmount < 0) {
+                                        // Era un ahorro (gasto), restar de la meta
+                                        adjustedAmount -= originalAmount.abs();
+                                      } else {
+                                        // Era un retiro (ingreso), sumar a la meta
+                                        adjustedAmount += originalAmount.abs();
+                                      }
+
+                                      // 2. Aplicar el nuevo movimiento
+                                      if (newAmount < 0) {
+                                        // Nuevo ahorro (gasto), sumar a la meta
+                                        adjustedAmount += newAmount.abs();
+                                      } else {
+                                        // Nuevo retiro (ingreso), restar de la meta
+                                        adjustedAmount -= newAmount.abs();
+                                      }
+
+                                      // Asegurar que no sea negativo
+                                      adjustedAmount = adjustedAmount.clamp(
+                                        0.0,
+                                        double.infinity,
+                                      );
+
+                                      // Actualizar la meta en el backend
+                                      await goalService.updateGoal(
+                                        originalGoalId,
+                                        {'currentAmount': adjustedAmount},
+                                      );
+
+                                      // Actualizar localmente
+                                      goal['current'] = adjustedAmount;
+                                      goals[goalIndex] = goal;
+                                      _goalsNotifier.value =
+                                          List<Map<String, dynamic>>.from(
+                                            goals,
+                                          );
+
+                                      print(
+                                        '✓ Meta actualizada: $adjustedAmount',
+                                      );
+                                    }
+                                  } catch (e) {
+                                    print(
+                                      'Error actualizando meta al editar movimiento: $e',
+                                    );
+                                  }
+                                }
+
+                                // Actualizar el notifier de movimientos
                                 _movementsNotifier.value =
                                     List<Map<String, dynamic>>.from(movements);
-                                _totalBalanceNotifier.value = totalBalance;
                               }
 
                               Navigator.pop(context);
                               if (mounted)
                                 ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
+                                  SnackBar(
                                     content: Text(
-                                      '✓ Movimiento actualizado correctamente',
+                                      originalGoalId != null &&
+                                              originalGoalId.isNotEmpty
+                                          ? '✓ Movimiento de meta actualizado\nNuevo saldo: S/ ${totalBalance.toStringAsFixed(2)}'
+                                          : '✓ Movimiento actualizado\nNuevo saldo: S/ ${totalBalance.toStringAsFixed(2)}',
                                     ),
                                     backgroundColor: Colors.blue,
-                                    duration: Duration(seconds: 2),
+                                    duration: const Duration(seconds: 3),
                                   ),
                                 );
-                              // refresh data from backend after update (silent)
-                              if (mounted)
-                                await _loadHomeData(showLoading: false);
+
+                              // ❌ NO llamar _loadHomeData aquí - ya tenemos el balance actualizado
                             } catch (e) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
@@ -2442,16 +3120,15 @@ class _InicioViewState extends State<InicioView> {
     );
   }
 
-  /// --- MODAL PARA AGREGAR O RETIRAR EN METAS ---
+  /// --- MODAL PARA AGREGAR DINERO A METAS (FUNCIONA PARA PERSONALES Y GRUPALES) ---
   void _showGoalFormModal(BuildContext context, int index) {
     final goal = goals[index];
     final montoController = TextEditingController();
-    final descripcionController = TextEditingController();
+    bool isSaving = false;
 
-    final categorias = categories;
-    String categoriaSeleccionada = categorias.isNotEmpty
-        ? (categorias.first['id'] ?? '').toString()
-        : '';
+    // Obtener información si es meta grupal
+    final isGroup = goal['isGroup'] == true;
+    final groupName = goal['groupName']?.toString() ?? 'Grupo';
 
     showModalBottomSheet(
       isScrollControlled: true,
@@ -2464,7 +3141,7 @@ class _InicioViewState extends State<InicioView> {
               decoration: BoxDecoration(
                 color: Colors.white,
                 borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(30),
+                  top: Radius.circular(24),
                 ),
                 boxShadow: [
                   BoxShadow(
@@ -2476,17 +3153,18 @@ class _InicioViewState extends State<InicioView> {
               ),
               child: Padding(
                 padding: EdgeInsets.only(
-                  left: 24,
-                  right: 24,
-                  bottom: MediaQuery.of(context).viewInsets.bottom + 24,
-                  top: 24,
+                  left: 16,
+                  right: 16,
+                  top: 12,
+                  bottom: MediaQuery.of(context).viewInsets.bottom + 16,
                 ),
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // Barra de arrastre
-                      Container(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Barra de arrastre
+                    Center(
+                      child: Container(
                         width: 40,
                         height: 4,
                         decoration: BoxDecoration(
@@ -2494,335 +3172,449 @@ class _InicioViewState extends State<InicioView> {
                           borderRadius: BorderRadius.circular(2),
                         ),
                       ),
-                      const SizedBox(height: 20),
-                      // Título con ícono y gradiente
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          vertical: 12,
-                          horizontal: 20,
-                        ),
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [
-                              Colors.purple.shade400,
-                              Colors.purple.shade600,
-                            ],
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
+                    ),
+                    const SizedBox(height: 10),
+                    // Título + Badge si es grupal
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(10),
                           ),
-                          borderRadius: BorderRadius.circular(20),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.purple.shade400.withOpacity(0.3),
-                              blurRadius: 8,
-                              offset: const Offset(0, 4),
-                            ),
-                          ],
+                          child: Icon(
+                            isGroup ? Icons.group : Icons.savings_outlined,
+                          ),
                         ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.2),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Icon(
-                                Icons.savings_outlined,
-                                color: Colors.white,
-                                size: 24,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Flexible(
-                              child: Text(
-                                goal['title'],
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                goal['title'] ?? '',
                                 style: const TextStyle(
-                                  fontSize: 18,
+                                  fontSize: 16,
                                   fontWeight: FontWeight.bold,
-                                  color: Colors.white,
                                 ),
-                                overflow: TextOverflow.ellipsis,
                               ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 24),
-                      // Campo de Monto
-                      TextField(
-                        controller: montoController,
-                        decoration: InputDecoration(
-                          labelText: 'Monto',
-                          labelStyle: TextStyle(
-                            color: Colors.grey.shade700,
-                            fontWeight: FontWeight.w500,
-                          ),
-                          prefixText: 'S/ ',
-                          prefixStyle: TextStyle(
-                            color: Colors.purple.shade700,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 18,
-                          ),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(16),
-                            borderSide: BorderSide(color: Colors.grey.shade300),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(16),
-                            borderSide: BorderSide(color: Colors.grey.shade300),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(16),
-                            borderSide: BorderSide(
-                              color: Colors.purple.shade500,
-                              width: 2,
-                            ),
-                          ),
-                          filled: true,
-                          fillColor: Colors.grey.shade50,
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 20,
-                            vertical: 16,
-                          ),
-                        ),
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w600,
-                        ),
-                        keyboardType: TextInputType.number,
-                      ),
-                      const SizedBox(height: 16),
-                      // Campo de Descripción
-                      TextField(
-                        controller: descripcionController,
-                        decoration: InputDecoration(
-                          labelText: 'Descripción',
-                          labelStyle: TextStyle(
-                            color: Colors.grey.shade700,
-                            fontWeight: FontWeight.w500,
-                          ),
-                          prefixIcon: Icon(
-                            Icons.description_outlined,
-                            color: Colors.grey.shade600,
-                          ),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(16),
-                            borderSide: BorderSide(color: Colors.grey.shade300),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(16),
-                            borderSide: BorderSide(color: Colors.grey.shade300),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(16),
-                            borderSide: BorderSide(
-                              color: Colors.purple.shade500,
-                              width: 2,
-                            ),
-                          ),
-                          filled: true,
-                          fillColor: Colors.grey.shade50,
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 20,
-                            vertical: 16,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      // Dropdown de Categoría
-                      DropdownButtonFormField<String>(
-                        value: categoriaSeleccionada.isEmpty
-                            ? null
-                            : categoriaSeleccionada,
-                        decoration: InputDecoration(
-                          labelText: 'Categoría',
-                          labelStyle: TextStyle(
-                            color: Colors.grey.shade700,
-                            fontWeight: FontWeight.w500,
-                          ),
-                          prefixIcon: Icon(
-                            Icons.category_outlined,
-                            color: Colors.grey.shade600,
-                          ),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(16),
-                            borderSide: BorderSide(color: Colors.grey.shade300),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(16),
-                            borderSide: BorderSide(color: Colors.grey.shade300),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(16),
-                            borderSide: BorderSide(
-                              color: Colors.purple.shade500,
-                              width: 2,
-                            ),
-                          ),
-                          filled: true,
-                          fillColor: Colors.grey.shade50,
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 20,
-                            vertical: 16,
-                          ),
-                        ),
-                        items: categorias
-                            .map(
-                              (c) => DropdownMenuItem<String>(
-                                value: (c['id'] ?? '').toString(),
-                                child: Text((c['name'] ?? 'Otros').toString()),
-                              ),
-                            )
-                            .toList(),
-                        onChanged: (v) {
-                          setModalState(() {
-                            categoriaSeleccionada = v ?? '';
-                          });
-                        },
-                      ),
-                      const SizedBox(height: 28),
-                      // Botones de acción
-                      Row(
-                        children: [
-                          Expanded(
-                            child: SizedBox(
-                              height: 56,
-                              child: ElevatedButton(
-                                onPressed: () {
-                                  final monto =
-                                      double.tryParse(montoController.text) ??
-                                      0.0;
-                                  // Update local state and notifiers without full rebuild
-                                  goal['current'] = (goal['current'] + monto)
-                                      .clamp(0, goal['total']);
-                                  totalBalance += monto;
-                                  movements.insert(0, {
-                                    'title': descripcionController.text.isEmpty
-                                        ? goal['title']
-                                        : descripcionController.text,
-                                    'amount': monto,
-                                    'date': _formatDate(),
-                                    'category':
-                                        (categories.firstWhere(
-                                          (c) =>
-                                              (c['id'] ?? '').toString() ==
-                                              categoriaSeleccionada,
-                                          orElse: () => {},
-                                        )['name']) ??
-                                        categoriaSeleccionada,
-                                    'categoryId': categoriaSeleccionada,
-                                  });
-                                  _movementsNotifier.value =
-                                      List<Map<String, dynamic>>.from(
-                                        movements,
-                                      );
-                                  _totalBalanceNotifier.value = totalBalance;
-                                  _goalsNotifier.value =
-                                      List<Map<String, dynamic>>.from(goals);
-                                  Navigator.pop(context);
-                                },
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.green.shade500,
-                                  foregroundColor: Colors.white,
-                                  elevation: 0,
-                                  shadowColor: Colors.green.shade500
-                                      .withOpacity(0.4),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                  ),
-                                ),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(Icons.add, size: 20),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      'Agregar',
-                                      style: const TextStyle(
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.bold,
+                              const SizedBox(height: 4),
+                              Row(
+                                children: [
+                                  if (isGroup) ...[
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 3,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.purple.shade50,
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            Icons.group,
+                                            size: 12,
+                                            color: Colors.purple.shade700,
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            groupName,
+                                            style: TextStyle(
+                                              fontSize: 11,
+                                              color: Colors.purple.shade700,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                     ),
+                                    const SizedBox(width: 8),
                                   ],
-                                ),
+                                  Text(
+                                    'Ahorrado: S/ ${(goal['current'] ?? 0.0).toStringAsFixed(0)}',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.grey.shade700,
+                                    ),
+                                  ),
+                                ],
                               ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    // Campo de Monto
+                    TextField(
+                      controller: montoController,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      decoration: InputDecoration(
+                        labelText: 'Monto',
+                        prefixText: 'S/ ',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: BorderSide(color: Colors.grey.shade300),
+                        ),
+                        filled: true,
+                        fillColor: Colors.grey.shade50,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    // Botones de acción
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context),
+                          child: Text(
+                            'Cancelar',
+                            style: TextStyle(
+                              color: Colors.grey.shade600,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: SizedBox(
-                              height: 56,
-                              child: ElevatedButton(
-                                onPressed: () {
-                                  final monto =
-                                      double.tryParse(montoController.text) ??
-                                      0.0;
-                                  goal['current'] = max(
-                                    0,
-                                    goal['current'] - monto,
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          onPressed: isSaving
+                              ? null
+                              : () async {
+                                  final text = montoController.text.trim();
+                                  final amount = double.tryParse(
+                                    text.replaceAll(',', '.'),
                                   );
-                                  totalBalance -= monto;
-                                  monthlyBudget += monto;
-                                  movements.insert(0, {
-                                    'title': descripcionController.text.isEmpty
-                                        ? goal['title']
-                                        : descripcionController.text,
-                                    'amount': -monto,
-                                    'date': _formatDate(),
-                                    'category':
-                                        (categories.firstWhere(
-                                          (c) =>
-                                              (c['id'] ?? '').toString() ==
-                                              categoriaSeleccionada,
-                                          orElse: () => {},
-                                        )['name']) ??
-                                        categoriaSeleccionada,
-                                    'categoryId': categoriaSeleccionada,
-                                  });
-                                  _movementsNotifier.value =
-                                      List<Map<String, dynamic>>.from(
-                                        movements,
-                                      );
-                                  _totalBalanceNotifier.value = totalBalance;
-                                  _monthlyBudgetNotifier.value = monthlyBudget;
-                                  _goalsNotifier.value =
-                                      List<Map<String, dynamic>>.from(goals);
-                                  Navigator.pop(context);
-                                },
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.red.shade500,
-                                  foregroundColor: Colors.white,
-                                  elevation: 0,
-                                  shadowColor: Colors.red.shade500.withOpacity(
-                                    0.4,
-                                  ),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                  ),
-                                ),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(Icons.remove, size: 20),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      'Retirar',
-                                      style: const TextStyle(
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.bold,
+                                  if (amount == null || amount <= 0) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                          'Ingresa un monto válido',
+                                        ),
                                       ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
+                                    );
+                                    return;
+                                  }
+
+                                  setModalState(() => isSaving = true);
+
+                                  try {
+                                    final goalService = GoalService();
+                                    final goalId =
+                                        goal['id']?.toString() ??
+                                        goal['_id']?.toString();
+                                    final goalTitle =
+                                        goal['title']?.toString() ?? 'Meta';
+                                    final currentAmount =
+                                        (goal['current'] ?? 0.0).toDouble();
+                                    final newSaved = currentAmount + amount;
+
+                                    // 1. Actualizar la meta en el backend
+                                    if (goalId != null && goalId.isNotEmpty) {
+                                      await goalService.updateGoal(goalId, {
+                                        'currentAmount': newSaved,
+                                      });
+                                    }
+
+                                    // 2. Registrar el AHORRO como una TRANSACCIÓN (GASTO)
+                                    // Esto hace que el dinero "salga" del saldo y entre a la meta
+                                    final transactionResp =
+                                        await TransactionService.createTransaction(
+                                          amount: amount,
+                                          type:
+                                              'expense', // ✅ Es un GASTO (sale dinero)
+                                          note: 'Ahorro a meta: $goalTitle',
+                                          categoryId:
+                                              null, // Puedes crear una categoría especial para "Ahorros"
+                                          goalId:
+                                              goalId, // ✅ Asociar con la meta
+                                        );
+
+                                    final createdTransaction =
+                                        transactionResp['transaction'] ??
+                                        transactionResp;
+                                    final newBalanceFromBackend =
+                                        transactionResp['newBalance'];
+
+                                    // 3. Actualizar estado local de la meta
+                                    goal['current'] = newSaved;
+
+                                    // 4. ✅ Actualizar SALDO TOTAL (el ahorro sale del saldo)
+                                    if (newBalanceFromBackend != null) {
+                                      totalBalance = _toDouble(
+                                        newBalanceFromBackend,
+                                      );
+                                      _totalBalanceNotifier.value =
+                                          totalBalance;
+
+                                      // Actualizar balance en accounts
+                                      if (accounts.isNotEmpty) {
+                                        accounts[0]['balance'] = totalBalance;
+                                        _accountsNotifier.value =
+                                            List<Map<String, dynamic>>.from(
+                                              accounts,
+                                            );
+                                      }
+                                    } else {
+                                      // Fallback: el ahorro sale del saldo
+                                      totalBalance -= amount;
+                                      _totalBalanceNotifier.value =
+                                          totalBalance;
+                                    }
+
+                                    // ❌ NO actualizar monthlyBudget
+                                    // El ahorro NO es un gasto del presupuesto mensual
+
+                                    // 5. Agregar el movimiento a la lista local
+                                    final rawDate = createdTransaction != null
+                                        ? (createdTransaction['occurredAt'] ??
+                                              createdTransaction['createdAt'])
+                                        : null;
+
+                                    movements.insert(0, {
+                                      'id': createdTransaction != null
+                                          ? (createdTransaction['id'] ??
+                                                createdTransaction['_id'])
+                                          : null,
+                                      'title': 'Ahorro a meta: $goalTitle',
+                                      'amount':
+                                          -amount, // ✅ Negativo porque es gasto
+                                      'date': _formatDisplayDate(
+                                        rawDate ?? _formatDate(),
+                                      ),
+                                      'category': 'Ahorro',
+                                      'categoryId': null,
+                                      'goalId': goalId, // ✅ Asociar con la meta
+                                    });
+
+                                    // 6. Actualizar notificadores
+                                    _goalsNotifier.value =
+                                        List<Map<String, dynamic>>.from(goals);
+                                    _movementsNotifier.value =
+                                        List<Map<String, dynamic>>.from(
+                                          movements,
+                                        );
+
+                                    if (mounted) {
+                                      Navigator.pop(context);
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            '✓ Ahorro de S/ ${amount.toStringAsFixed(2)} agregado a $goalTitle\nNuevo saldo: S/ ${totalBalance.toStringAsFixed(2)}',
+                                          ),
+                                          backgroundColor: Colors.green,
+                                          duration: const Duration(seconds: 3),
+                                        ),
+                                      );
+                                    }
+                                  } catch (e) {
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            'Error al agregar ahorro: ${e.toString()}',
+                                          ),
+                                        ),
+                                      );
+                                    }
+                                  } finally {
+                                    if (mounted) {
+                                      setModalState(() => isSaving = false);
+                                    }
+                                  }
+                                },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green.shade600,
+                            foregroundColor: Colors.white,
                           ),
-                        ],
-                      ),
-                    ],
-                  ),
+                          child: const Text('Ahorrar'),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          onPressed: isSaving
+                              ? null
+                              : () async {
+                                  final text = montoController.text.trim();
+                                  final amount = double.tryParse(
+                                    text.replaceAll(',', '.'),
+                                  );
+                                  if (amount == null || amount <= 0) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                          'Ingresa un monto válido',
+                                        ),
+                                      ),
+                                    );
+                                    return;
+                                  }
+
+                                  final currentAmount = (goal['current'] ?? 0.0)
+                                      .toDouble();
+
+                                  if (amount > currentAmount) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                          'No puedes retirar más de lo ahorrado',
+                                        ),
+                                      ),
+                                    );
+                                    return;
+                                  }
+
+                                  setModalState(() => isSaving = true);
+
+                                  try {
+                                    final goalService = GoalService();
+                                    final goalId =
+                                        goal['id']?.toString() ??
+                                        goal['_id']?.toString();
+                                    final goalTitle =
+                                        goal['title']?.toString() ?? 'Meta';
+                                    final newSaved = (currentAmount - amount)
+                                        .clamp(0.0, double.infinity);
+
+                                    // 1. Actualizar la meta en el backend
+                                    if (goalId != null && goalId.isNotEmpty) {
+                                      await goalService.updateGoal(goalId, {
+                                        'currentAmount': newSaved,
+                                      });
+                                    }
+
+                                    // 2. Registrar el RETIRO como una TRANSACCIÓN (INGRESO)
+                                    // Esto hace que el dinero "vuelva" al saldo desde la meta
+                                    final transactionResp =
+                                        await TransactionService.createTransaction(
+                                          amount: amount,
+                                          type:
+                                              'income', // ✅ Es un INGRESO (entra dinero)
+                                          note: 'Retiro de meta: $goalTitle',
+                                          categoryId: null,
+                                          goalId:
+                                              goalId, // ✅ Asociar con la meta
+                                        );
+
+                                    final createdTransaction =
+                                        transactionResp['transaction'] ??
+                                        transactionResp;
+                                    final newBalanceFromBackend =
+                                        transactionResp['newBalance'];
+
+                                    // 3. Actualizar estado local de la meta
+                                    goal['current'] = newSaved;
+
+                                    // 4. ✅ Actualizar SALDO TOTAL (el retiro vuelve al saldo)
+                                    if (newBalanceFromBackend != null) {
+                                      totalBalance = _toDouble(
+                                        newBalanceFromBackend,
+                                      );
+                                      _totalBalanceNotifier.value =
+                                          totalBalance;
+
+                                      // Actualizar balance en accounts
+                                      if (accounts.isNotEmpty) {
+                                        accounts[0]['balance'] = totalBalance;
+                                        _accountsNotifier.value =
+                                            List<Map<String, dynamic>>.from(
+                                              accounts,
+                                            );
+                                      }
+                                    } else {
+                                      // Fallback: el retiro suma al saldo
+                                      totalBalance += amount;
+                                      _totalBalanceNotifier.value =
+                                          totalBalance;
+                                    }
+
+                                    // ❌ NO actualizar monthlyBudget
+                                    // El retiro de meta NO afecta el presupuesto mensual
+
+                                    // 5. Agregar el movimiento a la lista local
+                                    final rawDate = createdTransaction != null
+                                        ? (createdTransaction['occurredAt'] ??
+                                              createdTransaction['createdAt'])
+                                        : null;
+
+                                    movements.insert(0, {
+                                      'id': createdTransaction != null
+                                          ? (createdTransaction['id'] ??
+                                                createdTransaction['_id'])
+                                          : null,
+                                      'title': 'Retiro de meta: $goalTitle',
+                                      'amount':
+                                          amount, // ✅ Positivo porque es ingreso
+                                      'date': _formatDisplayDate(
+                                        rawDate ?? _formatDate(),
+                                      ),
+                                      'category': 'Retiro',
+                                      'categoryId': null,
+                                      'goalId': goalId, // ✅ Asociar con la meta
+                                    });
+
+                                    // 6. Actualizar notificadores
+                                    _goalsNotifier.value =
+                                        List<Map<String, dynamic>>.from(goals);
+                                    _movementsNotifier.value =
+                                        List<Map<String, dynamic>>.from(
+                                          movements,
+                                        );
+
+                                    if (mounted) {
+                                      Navigator.pop(context);
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            '✓ Retiro de S/ ${amount.toStringAsFixed(2)} de $goalTitle\nNuevo saldo: S/ ${totalBalance.toStringAsFixed(2)}',
+                                          ),
+                                          backgroundColor: Colors.orange,
+                                          duration: const Duration(seconds: 3),
+                                        ),
+                                      );
+                                    }
+                                  } catch (e) {
+                                    if (mounted) {
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            'Error al retirar: ${e.toString()}',
+                                          ),
+                                        ),
+                                      );
+                                    }
+                                  } finally {
+                                    if (mounted) {
+                                      setModalState(() => isSaving = false);
+                                    }
+                                  }
+                                },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFDC2626),
+                            foregroundColor: Colors.white,
+                          ),
+                          child: const Text('Retirar'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                  ],
                 ),
               ),
             );
@@ -2878,7 +3670,10 @@ class _InicioViewState extends State<InicioView> {
                 padding: EdgeInsets.only(
                   left: 24,
                   right: 24,
-                  bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+                  bottom:
+                      MediaQuery.of(context).viewInsets.bottom +
+                      MediaQuery.of(context).viewPadding.bottom +
+                      24,
                   top: 24,
                 ),
                 child: SingleChildScrollView(
@@ -3191,38 +3986,34 @@ class _InicioViewState extends State<InicioView> {
                                   ? _toDouble(newBalanceRaw)
                                   : null;
 
-                              // Update local state and notifiers without full rebuild
-                              // Priorizar el balance del backend si está disponible
+                              // ✅ ACTUALIZACIÓN CORRECTA DEL SALDO Y PRESUPUESTO
+                              // 1. Actualizar SALDO TOTAL (priorizar backend)
                               if (newBalance != null) {
                                 totalBalance = newBalance;
-                              } else {
-                                // Fallback: calcular localmente
-                                if (!isIncome) {
-                                  monthlyBudget += monto;
-                                  if (monthlyBudgetGoal > 0) {
-                                    totalBalance =
-                                        monthlyBudgetGoal - monthlyBudget;
-                                  } else {
-                                    totalBalance += amount;
-                                  }
-                                } else {
-                                  // Para ingresos
-                                  if (monthlyBudgetGoal > 0) {
-                                    // Si hay presupuesto mensual, los ingresos no afectan el balance
-                                    // El balance es: presupuesto - gastos
-                                    totalBalance =
-                                        monthlyBudgetGoal - monthlyBudget;
-                                  } else {
-                                    // Sin presupuesto, sumar el ingreso
-                                    totalBalance += amount;
-                                  }
+                                _totalBalanceNotifier.value = totalBalance;
+
+                                // Actualizar también el balance en accounts
+                                if (accounts.isNotEmpty) {
+                                  accounts[0]['balance'] = totalBalance;
+                                  _accountsNotifier.value =
+                                      List<Map<String, dynamic>>.from(accounts);
                                 }
+                              } else {
+                                // Fallback: actualizar localmente
+                                if (isIncome) {
+                                  totalBalance += monto; // ✅ Ingreso SUMA
+                                } else {
+                                  totalBalance -= monto; // ✅ Gasto RESTA
+                                }
+                                _totalBalanceNotifier.value = totalBalance;
                               }
 
-                              // Actualizar monthlyBudget solo si es gasto
+                              // 2. Actualizar PRESUPUESTO: Solo si es GASTO
                               if (!isIncome) {
                                 monthlyBudget += monto;
+                                _monthlyBudgetNotifier.value = monthlyBudget;
                               }
+                              // Si es INGRESO, el presupuesto NO cambia
 
                               final rawDate = created != null
                                   ? (created['occurredAt'] ??
@@ -3252,8 +4043,6 @@ class _InicioViewState extends State<InicioView> {
                               });
                               _movementsNotifier.value =
                                   List<Map<String, dynamic>>.from(movements);
-                              _totalBalanceNotifier.value = totalBalance;
-                              _monthlyBudgetNotifier.value = monthlyBudget;
 
                               Navigator.pop(context);
 
@@ -3262,13 +4051,13 @@ class _InicioViewState extends State<InicioView> {
                                   SnackBar(
                                     content: Text(
                                       isIncome
-                                          ? '✓ Ingreso agregado correctamente'
-                                          : '✓ Gasto registrado correctamente',
+                                          ? '✓ Ingreso agregado: +S/ ${monto.toStringAsFixed(2)}\nNuevo saldo: S/ ${totalBalance.toStringAsFixed(2)}'
+                                          : '✓ Gasto registrado: -S/ ${monto.toStringAsFixed(2)}\nNuevo saldo: S/ ${totalBalance.toStringAsFixed(2)}',
                                     ),
                                     backgroundColor: isIncome
                                         ? Colors.green
                                         : Colors.red,
-                                    duration: const Duration(seconds: 2),
+                                    duration: const Duration(seconds: 3),
                                   ),
                                 );
                               // No hacer refresh inmediato para evitar parpadeo
