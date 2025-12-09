@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../core/services/group_service.dart';
+import '../../../core/services/metas_service.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -16,6 +17,7 @@ class GroupDetailPage extends StatefulWidget {
 
 class _GroupDetailPageState extends State<GroupDetailPage> {
   final GroupService _groupService = GroupService();
+  final GoalService _goalService = GoalService();
   bool _isLoading = false;
   String? _error;
   List<Map<String, dynamic>> _members = [];
@@ -132,10 +134,6 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                   decoration: InputDecoration(
                     labelText: 'Monto',
                     prefixText: 'S/ ',
-                    prefixIcon: Icon(
-                      Icons.attach_money,
-                      color: Colors.grey.shade600,
-                    ),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(14),
                       borderSide: BorderSide(color: Colors.grey.shade300),
@@ -164,12 +162,13 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                         final text = amountController.text.trim();
                         final amt = double.tryParse(text.replaceAll(',', '.'));
                         if (amt == null || amt <= 0) {
-                          if (mounted)
+                          if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(
                                 content: Text('Ingresa un monto válido'),
                               ),
                             );
+                          }
                           return;
                         }
                         Navigator.pop(ctx);
@@ -183,6 +182,18 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                             note: null,
                             groupId: widget.groupId,
                           );
+
+                          // Registrar el ahorro como transacción (gasto)
+                          try {
+                            await _goalService.recordSaving(
+                              goalTitle: title,
+                              amount: amt,
+                            );
+                          } catch (e) {
+                            print(
+                              'Error registrando transacción de ahorro grupal: $e',
+                            );
+                          }
 
                           // backend may return updatedGoal with new currentAmount
                           final updatedGoal =
@@ -220,12 +231,17 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                             }
                             setState(() => _savings[index] = old);
                           }
-                          if (mounted)
+
+                          // Recargar detalles de la meta para actualizar nombres
+                          await _loadSavingDetail(savingId, index);
+
+                          if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(content: Text('Ahorro agregado')),
                             );
+                          }
                         } catch (e) {
-                          if (mounted)
+                          if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
                                 content: Text(
@@ -233,6 +249,7 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                 ),
                               ),
                             );
+                          }
                         } finally {
                           if (mounted) setState(() => _isLoading = false);
                         }
@@ -249,16 +266,17 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                         final text = amountController.text.trim();
                         final amt = double.tryParse(text.replaceAll(',', '.'));
                         if (amt == null || amt <= 0) {
-                          if (mounted)
+                          if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(
                                 content: Text('Ingresa un monto válido'),
                               ),
                             );
+                          }
                           return;
                         }
                         if (amt > currentAmount) {
-                          if (mounted)
+                          if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(
                                 content: Text(
@@ -266,6 +284,7 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                 ),
                               ),
                             );
+                          }
                           return;
                         }
                         Navigator.pop(ctx);
@@ -279,6 +298,18 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                             note: null,
                             groupId: widget.groupId,
                           );
+
+                          // Registrar el retiro como transacción (ingreso)
+                          try {
+                            await _goalService.recordWithdrawal(
+                              goalTitle: title,
+                              amount: amt,
+                            );
+                          } catch (e) {
+                            print(
+                              'Error registrando transacción de retiro grupal: $e',
+                            );
+                          }
 
                           final updatedGoal =
                               resp['updatedGoal'] ??
@@ -317,12 +348,17 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                             }
                             setState(() => _savings[index] = old);
                           }
-                          if (mounted)
+
+                          // Recargar detalles de la meta para actualizar nombres
+                          await _loadSavingDetail(savingId, index);
+
+                          if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(content: Text('Retiro realizado')),
                             );
+                          }
                         } catch (e) {
-                          if (mounted)
+                          if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
                                 content: Text(
@@ -330,6 +366,7 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                 ),
                               ),
                             );
+                          }
                         } finally {
                           if (mounted) setState(() => _isLoading = false);
                         }
@@ -637,10 +674,7 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                         decoration: InputDecoration(
                           labelText: 'Monto objetivo',
                           hintText: 'Ej. 5000',
-                          prefixIcon: Icon(
-                            Icons.attach_money,
-                            color: Colors.grey.shade600,
-                          ),
+                          prefixText: 'S/ ',
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(14),
                             borderSide: BorderSide(color: Colors.grey.shade300),
@@ -828,197 +862,6 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Error regenerando código: $e')));
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  Future<void> _inviteMember() async {
-    final emailController = TextEditingController();
-    final formKey = GlobalKey<FormState>();
-
-    final result = await showDialog<String?>(
-      context: context,
-      builder: (_) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
-            color: Colors.white,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Header elegante
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(20),
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [Color(0xFF8B9DC3), Color(0xFF6B7FA8)],
-                  ),
-                  borderRadius: BorderRadius.only(
-                    topLeft: Radius.circular(20),
-                    topRight: Radius.circular(20),
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.2),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: const Icon(
-                        Icons.person_add_outlined,
-                        color: Colors.white,
-                        size: 22,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    const Text(
-                      'Invitar Miembro',
-                      style: TextStyle(
-                        fontSize: 19,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              // Contenido
-              Padding(
-                padding: const EdgeInsets.all(20),
-                child: Form(
-                  key: formKey,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        'Ingresa el email del miembro que deseas invitar',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: Colors.grey.shade600,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextFormField(
-                        controller: emailController,
-                        keyboardType: TextInputType.emailAddress,
-                        decoration: InputDecoration(
-                          labelText: 'Email',
-                          hintText: 'ejemplo@correo.com',
-                          prefixIcon: Icon(
-                            Icons.email_outlined,
-                            color: Colors.grey.shade600,
-                          ),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(14),
-                            borderSide: BorderSide(color: Colors.grey.shade300),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(14),
-                            borderSide: BorderSide(color: Colors.grey.shade300),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(14),
-                            borderSide: const BorderSide(
-                              color: Color(0xFF6B7FA8),
-                              width: 2,
-                            ),
-                          ),
-                          filled: true,
-                          fillColor: Colors.grey.shade50,
-                        ),
-                        validator: (v) {
-                          if (v == null || v.trim().isEmpty)
-                            return 'Ingresa un email';
-                          if (!v.contains('@')) return 'Email inválido';
-                          return null;
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              // Botones
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    TextButton(
-                      onPressed: () => Navigator.of(context).pop(null),
-                      style: TextButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 12,
-                        ),
-                      ),
-                      child: Text(
-                        'Cancelar',
-                        style: TextStyle(
-                          color: Colors.grey.shade600,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 15,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(
-                      onPressed: () {
-                        if (formKey.currentState?.validate() ?? false) {
-                          Navigator.of(
-                            context,
-                          ).pop(emailController.text.trim());
-                        }
-                      },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF6B7FA8),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 24,
-                          vertical: 12,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        elevation: 0,
-                      ),
-                      child: const Text(
-                        'Invitar',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 15,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-
-    if (result == null) return;
-    setState(() => _isLoading = true);
-    try {
-      await _groupService.inviteMember(
-        groupId: widget.groupId!,
-        inviteeEmail: result,
-      );
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Invitación enviada')));
-    } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Error invitando: $e')));
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -1275,8 +1118,8 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
             context,
           ).showSnackBar(const SnackBar(content: Text('Grupo eliminado')));
         }
-        // Close the detail page
-        Navigator.of(context).pop();
+        // Close the detail page and return true to indicate the group was deleted
+        Navigator.of(context).pop(true);
       } else {
         // Regular member leaves
         await _groupService.leaveGroup(widget.groupId!);
@@ -1285,7 +1128,8 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
             context,
           ).showSnackBar(const SnackBar(content: Text('Has salido del grupo')));
         }
-        Navigator.of(context).pop();
+        // Close the detail page and return true to indicate the user left the group
+        Navigator.of(context).pop(true);
       }
     } catch (e) {
       // Show a cleaner message (remove the "Exception: " prefix if present)
@@ -1317,8 +1161,36 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
     Map<String, dynamic>? savingData,
     int? savingIndex,
   }) {
+    final percent = (progress * 100).clamp(0, 100).round();
+    final remaining = (targetAmount - currentAmount).clamp(
+      0.0,
+      double.infinity,
+    );
+
+    // Formato de fecha
+    String formattedDate = '';
+    if (savingData != null) {
+      try {
+        final raw =
+            savingData['targetDate'] ??
+            savingData['target_date'] ??
+            savingData['goalDate'] ??
+            savingData['date'];
+        if (raw != null) {
+          DateTime? dt;
+          if (raw is String)
+            dt = DateTime.tryParse(raw);
+          else if (raw is int)
+            dt = DateTime.fromMillisecondsSinceEpoch(raw);
+          else if (raw is double)
+            dt = DateTime.fromMillisecondsSinceEpoch(raw.toInt());
+          if (dt != null) formattedDate = DateFormat.yMMMMd().format(dt);
+        }
+      } catch (_) {}
+    }
+
     return Container(
-      constraints: const BoxConstraints(minHeight: 140),
+      width: double.infinity,
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
@@ -1328,9 +1200,9 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
             Colors.white,
             primaryColor.shade50.withOpacity(0.3),
           ],
+          stops: const [0.0, 0.5, 1.0],
         ),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: primaryColor.shade200, width: 1.5),
+        borderRadius: BorderRadius.circular(20),
         boxShadow: [
           BoxShadow(
             color: primaryColor.withOpacity(0.15),
@@ -1339,247 +1211,293 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
           ),
         ],
       ),
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Stack(
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: primaryColor.shade100.withOpacity(0.5),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(
-                  Icons.savings,
-                  color: primaryColor.shade700,
-                  size: 20,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
+          Positioned(
+            right: -10,
+            top: -10,
+            child: Icon(
+              Icons.savings,
+              size: 80,
+              color: primaryColor.withOpacity(0.05),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(18),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
-                      title,
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold,
-                        color: primaryColor.shade900,
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: primaryColor.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(12),
                       ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    // Show target/goal date if provided in savingData
-                    if (savingData != null) ...[
-                      const SizedBox(height: 4),
-                      Builder(
-                        builder: (ctx) {
-                          String dateText = '';
-                          try {
-                            final raw =
-                                savingData['targetDate'] ??
-                                savingData['target_date'] ??
-                                savingData['goalDate'] ??
-                                savingData['date'];
-                            if (raw != null) {
-                              DateTime? dt;
-                              if (raw is String)
-                                dt = DateTime.tryParse(raw);
-                              else if (raw is int)
-                                dt = DateTime.fromMillisecondsSinceEpoch(raw);
-                              else if (raw is double)
-                                dt = DateTime.fromMillisecondsSinceEpoch(
-                                  raw.toInt(),
-                                );
-                              if (dt != null)
-                                dateText = DateFormat.yMMMd().format(dt);
-                              else
-                                dateText = raw.toString();
-                            }
-                          } catch (_) {}
-                          return dateText.isNotEmpty
-                              ? Text(
-                                  dateText,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.grey.shade600,
-                                  ),
-                                )
-                              : const SizedBox.shrink();
-                        },
+                      child: Icon(
+                        progress >= 1.0 ? Icons.check_circle : Icons.flag,
+                        color: primaryColor.shade700,
+                        size: 22,
                       ),
-                    ],
-                  ],
-                ),
-              ),
-              GestureDetector(
-                onTap: () async {
-                  // If we don't have detailed movements, load them first so the dialog shows data
-                  if (savingId != null &&
-                      savingIndex != null &&
-                      (savingData == null || savingData['_detailed'] != true)) {
-                    await _loadSavingDetail(savingId, savingIndex);
-                  }
-                  // ignore: unnecessary_type_check
-                  List updated = contributions is List
-                      ? List.from(contributions)
-                      : [];
-                  if (savingIndex != null &&
-                      savingIndex >= 0 &&
-                      savingIndex < _savings.length) {
-                    final s = _savings[savingIndex];
-                    final moves =
-                        s['movements'] ??
-                        s['contributions'] ??
-                        s['transactions'] ??
-                        [];
-                    if (moves is List && moves.isNotEmpty) updated = moves;
-                  }
-                  await _showMovementsDialog(
-                    title,
-                    updated,
-                    savingId: savingId,
-                  );
-                },
-                child: Container(
-                  padding: const EdgeInsets.all(6),
-                  decoration: BoxDecoration(
-                    color: primaryColor.shade100.withOpacity(0.5),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Icon(
-                    Icons.history,
-                    size: 18,
-                    color: primaryColor.shade700,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Acumulado',
-                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    '\$${currentAmount.toStringAsFixed(0)}',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: primaryColor.shade700,
                     ),
-                  ),
-                ],
-              ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    'Objetivo',
-                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    '\$${targetAmount.toStringAsFixed(0)}',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.grey.shade700,
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                              color: primaryColor.shade900,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          if (formattedDate.isNotEmpty) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              formattedDate,
+                              style: TextStyle(
+                                color: Colors.grey.shade600,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
                     ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Stack(
-            children: [
-              Container(
-                height: 8,
-                decoration: BoxDecoration(
-                  color: primaryColor.shade100.withOpacity(0.3),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 500),
-                height: 8,
-                width: MediaQuery.of(context).size.width * progress * 0.85,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [primaryColor.shade400, primaryColor.shade600],
-                  ),
-                  borderRadius: BorderRadius.circular(10),
-                  boxShadow: [
-                    BoxShadow(
-                      color: primaryColor.withOpacity(0.3),
-                      blurRadius: 4,
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                '${(progress * 100).toStringAsFixed(0)}% completado',
-                style: TextStyle(
-                  fontSize: 11,
-                  color: primaryColor.shade700,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              // Actions: Edit / Delete (links) + Ahorrar (button)
-              Align(
-                alignment: Alignment.centerRight,
-                child: Wrap(
-                  spacing: 8,
-                  runSpacing: 6,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  alignment: WrapAlignment.end,
-                  children: [
-                    TextButton(
-                      onPressed: () {
-                        if (savingId != null)
-                          _showEditSavingDialog(savingId, savingData);
-                      },
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [
+                            primaryColor.shade400,
+                            primaryColor.shade600,
+                          ],
+                        ),
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: [
+                          BoxShadow(
+                            color: primaryColor.withOpacity(0.3),
+                            blurRadius: 4,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
                       child: Text(
-                        'Editar',
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.primary,
+                        '$percent%',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
                         ),
                       ),
                     ),
-                    TextButton(
-                      onPressed: () {
-                        if (savingId != null) _confirmDeleteSaving(savingId);
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: () async {
+                        // Cargar movimientos si no están cargados
+                        if (savingId != null &&
+                            savingIndex != null &&
+                            (savingData == null ||
+                                savingData['_detailed'] != true)) {
+                          await _loadSavingDetail(savingId, savingIndex);
+                        }
+                        List updated = List.from(contributions);
+                        if (savingIndex != null &&
+                            savingIndex >= 0 &&
+                            savingIndex < _savings.length) {
+                          final s = _savings[savingIndex];
+                          final moves =
+                              s['movements'] ??
+                              s['contributions'] ??
+                              s['transactions'] ??
+                              [];
+                          if (moves is List && moves.isNotEmpty)
+                            updated = moves;
+                        }
+                        await _showMovementsDialog(
+                          title,
+                          updated,
+                          savingId: savingId,
+                        );
                       },
-                      child: const Text(
-                        'Eliminar',
-                        style: TextStyle(color: Colors.red),
+                      child: Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: primaryColor.shade100.withOpacity(0.5),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(
+                          Icons.history,
+                          size: 18,
+                          color: primaryColor.shade700,
+                        ),
                       ),
                     ),
-                    // 'Ahorrar' button removed as requested
                   ],
                 ),
-              ),
-            ],
+                const SizedBox(height: 12),
+                // Barra de progreso
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Container(
+                    height: 14,
+                    decoration: BoxDecoration(
+                      color: primaryColor.shade100.withOpacity(0.5),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Stack(
+                      children: [
+                        FractionallySizedBox(
+                          widthFactor: progress,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: [
+                                  primaryColor.shade400,
+                                  primaryColor.shade600,
+                                ],
+                              ),
+                              borderRadius: BorderRadius.circular(12),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: primaryColor.withOpacity(0.4),
+                                  blurRadius: 4,
+                                  offset: const Offset(0, 1),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Ahorrado',
+                            style: TextStyle(
+                              color: Colors.grey.shade600,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          const SizedBox(height: 1),
+                          Text(
+                            'S/ ${currentAmount.toStringAsFixed(0)}',
+                            style: TextStyle(
+                              color: primaryColor.shade700,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      flex: 2,
+                      child: Center(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 3,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade200,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(
+                              'de S/ ${targetAmount.toStringAsFixed(0)}',
+                              style: TextStyle(
+                                color: Colors.grey.shade700,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      flex: 3,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            'Falta',
+                            style: TextStyle(
+                              color: Colors.grey.shade600,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          const SizedBox(height: 1),
+                          Text(
+                            'S/ ${remaining.toStringAsFixed(0)}',
+                            style: TextStyle(
+                              color: Colors.grey.shade800,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                // Acciones: Editar / Eliminar - solo para admin/owner
+                if (_isAdminOrOwner)
+                  SizedBox(
+                    width: double.infinity,
+                    child: Wrap(
+                      alignment: WrapAlignment.end,
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        TextButton(
+                          onPressed: () {
+                            if (savingId != null) {
+                              _showEditSavingDialog(savingId, savingData);
+                            }
+                          },
+                          child: const Text('Editar'),
+                        ),
+                        TextButton(
+                          onPressed: () {
+                            if (savingId != null) {
+                              _confirmDeleteSaving(savingId);
+                            }
+                          },
+                          style: TextButton.styleFrom(
+                            foregroundColor: Colors.red,
+                          ),
+                          child: const Text('Eliminar'),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
           ),
         ],
       ),
@@ -1778,20 +1696,21 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                           String dateText = '';
                           try {
                             DateTime? dt;
-                            if (rawDate is String)
+                            if (rawDate is String) {
                               dt = DateTime.tryParse(rawDate);
-                            else if (rawDate is int)
+                            } else if (rawDate is int)
                               dt = DateTime.fromMillisecondsSinceEpoch(rawDate);
                             else if (rawDate is double)
                               dt = DateTime.fromMillisecondsSinceEpoch(
                                 rawDate.toInt(),
                               );
-                            if (dt != null)
+                            if (dt != null) {
                               dateText = DateFormat(
                                 'yyyy-MM-dd HH:mm',
                               ).format(dt);
-                            else
+                            } else {
                               dateText = rawDate?.toString() ?? '';
+                            }
                           } catch (_) {
                             dateText = rawDate?.toString() ?? '';
                           }
@@ -1925,16 +1844,17 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
         saving['targetDate'] ?? saving['date'] ?? saving['goalDate'];
     if (rawDate != null) {
       try {
-        if (rawDate is String)
+        if (rawDate is String) {
           selectedDate = DateTime.tryParse(rawDate);
-        else if (rawDate is int)
+        } else if (rawDate is int)
           selectedDate = DateTime.fromMillisecondsSinceEpoch(rawDate);
         else if (rawDate is DateTime)
           selectedDate = rawDate;
       } catch (_) {}
     }
-    if (selectedDate != null)
+    if (selectedDate != null) {
       dateCtrl.text = DateFormat.yMMMd().format(selectedDate);
+    }
 
     final formKey = GlobalKey<FormState>();
     final ok = await showDialog<bool?>(
@@ -2010,12 +1930,9 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                       const SizedBox(height: 12),
                       TextFormField(
                         controller: amountCtrl,
-                        decoration: InputDecoration(
+                        decoration: const InputDecoration(
                           labelText: 'Monto objetivo',
-                          prefixIcon: Icon(
-                            Icons.attach_money,
-                            color: Colors.grey.shade600,
-                          ),
+                          prefixText: 'S/ ',
                         ),
                         keyboardType: const TextInputType.numberWithOptions(
                           decimal: true,
@@ -2096,10 +2013,11 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
     final newTitle = titleCtrl.text.trim();
     final newAmount = num.tryParse(amountCtrl.text.replaceAll(',', '.'));
     if (newAmount == null || newAmount <= 0) {
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Ingresa un monto válido')),
         );
+      }
       return;
     }
     setState(() => _isLoading = true);
@@ -2110,10 +2028,11 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
         if (selectedDate != null) 'targetDate': selectedDate!.toIso8601String(),
       };
       await _groupService.updateSaving(id: savingId, body: body);
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('Meta actualizada')));
+      }
       await _loadSavings();
     } catch (e) {
       String msg;
@@ -2124,10 +2043,11 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
       } catch (_) {
         msg = e.toString();
       }
-      if (mounted)
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error actualizando meta: $msg')),
         );
+      }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -2187,13 +2107,37 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
       appBar: AppBar(
         title: Text(title),
         actions: [
-          IconButton(
-            onPressed: _inviteMember,
-            icon: const Icon(Icons.person_add),
-          ),
-          IconButton(
-            onPressed: _leaveGroup,
-            icon: const Icon(Icons.exit_to_app),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            onSelected: (value) {
+              if (value == 'leave') {
+                _leaveGroup();
+              }
+            },
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                value: 'leave',
+                child: Row(
+                  children: [
+                    Icon(
+                      _myRole == 'owner'
+                          ? Icons.delete_forever_outlined
+                          : Icons.exit_to_app_outlined,
+                      size: 20,
+                      color: Colors.red,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      _myRole == 'owner' ? 'Eliminar Grupo' : 'Salir del Grupo',
+                      style: const TextStyle(color: Colors.red),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -2493,18 +2437,19 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                               memberPhoto ??
                                               firebaseUser?.photoURL;
                                         }
-                                        if (memberName.isEmpty)
+                                        if (memberName.isEmpty) {
                                           memberName = 'Miembro';
+                                        }
                                         String initials = '';
                                         try {
                                           final parts = memberName.split(
                                             RegExp(r"\s+"),
                                           );
-                                          if (parts.length == 1)
+                                          if (parts.length == 1) {
                                             initials = parts[0]
                                                 .substring(0, 1)
                                                 .toUpperCase();
-                                          else
+                                          } else {
                                             initials =
                                                 (parts[0].substring(0, 1) +
                                                         parts[1].substring(
@@ -2512,6 +2457,7 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                                           1,
                                                         ))
                                                     .toUpperCase();
+                                          }
                                         } catch (_) {
                                           initials = memberName.isNotEmpty
                                               ? memberName[0].toUpperCase()
@@ -2875,21 +2821,15 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                                         .clamp(0.0, 1.0)
                                                   : 0.0;
 
-                                              // Colores sutiles y elegantes basados en progreso
-                                              final MaterialColor primaryColor;
-                                              if (progress >= 0.9) {
-                                                primaryColor = Colors
-                                                    .blueGrey; // Completado
-                                              } else if (progress >= 0.6) {
-                                                primaryColor = Colors
-                                                    .grey; // Buen progreso
-                                              } else if (progress >= 0.3) {
-                                                primaryColor = Colors
-                                                    .grey; // Progreso medio
-                                              } else {
-                                                primaryColor =
-                                                    Colors.grey; // Inicio
-                                              }
+                                              // Colores dinámicos según progreso (igual que metas individuales)
+                                              final MaterialColor primaryColor =
+                                                  progress >= 1.0
+                                                  ? Colors.green
+                                                  : progress >= 0.7
+                                                  ? Colors.blue
+                                                  : progress >= 0.4
+                                                  ? Colors.orange
+                                                  : Colors.purple;
 
                                               // Load details if needed
                                               if ((contributions == null ||

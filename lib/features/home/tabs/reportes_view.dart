@@ -990,7 +990,7 @@ class _ReportesViewState extends State<ReportesView> {
                         final slotWidth = isMain ? 56.0 : 40.0;
                         final barInnerWidth = isMain ? 18.0 : 8.0;
                         final barHeight =
-                            (chartHeight - 28) * (0.10 + 0.90 * heightFactor);
+                            (chartHeight - 50) * (0.10 + 0.90 * heightFactor);
 
                         return Container(
                           width: slotWidth,
@@ -1001,23 +1001,23 @@ class _ReportesViewState extends State<ReportesView> {
                               // Value label for the main (tallest) bar
                               if (isMain)
                                 Padding(
-                                  padding: const EdgeInsets.only(bottom: 8.0),
+                                  padding: const EdgeInsets.only(bottom: 4.0),
                                   child: Text(
                                     _formatCurrency(val),
                                     style: const TextStyle(
                                       color: Colors.redAccent,
-                                      fontSize: 12,
+                                      fontSize: 11,
                                       fontWeight: FontWeight.bold,
                                     ),
                                   ),
                                 )
                               else
-                                const SizedBox(height: 20),
+                                const SizedBox(height: 16),
 
                               // Bar (rectangular style)
                               Container(
                                 width: barInnerWidth,
-                                height: barHeight.clamp(4.0, chartHeight - 20),
+                                height: barHeight.clamp(4.0, chartHeight - 40),
                                 decoration: BoxDecoration(
                                   color: val > 0
                                       ? Colors.redAccent
@@ -1036,10 +1036,10 @@ class _ReportesViewState extends State<ReportesView> {
                                 ),
                               ),
 
-                              const SizedBox(height: 8),
+                              const SizedBox(height: 6),
                               // X label
                               Padding(
-                                padding: const EdgeInsets.only(top: 6.0),
+                                padding: const EdgeInsets.only(top: 4.0),
                                 child: Text(
                                   (i >= 0 && i < titles.length)
                                       ? titles[i]

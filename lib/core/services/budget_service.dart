@@ -166,4 +166,47 @@ class BudgetService {
       return false;
     }
   }
+
+  /// Elimina el presupuesto mensual del backend.
+  /// Retorna true si la operación fue exitosa.
+  Future<bool> deleteMonthlyBudget() async {
+    lastErrorMessage = null;
+
+    try {
+      final headers = await _getAuthHeaders();
+
+      // Primero obtener el presupuesto mensual para conseguir su ID
+      final existing = await getMonthlyBudget();
+      if (existing == null) {
+        // No existe presupuesto mensual, considerar como éxito
+        return true;
+      }
+
+      final id = (existing['id'] ?? existing['_id'] ?? existing['budgetId'])
+          ?.toString();
+
+      if (id == null || id.isEmpty) {
+        lastErrorMessage = 'No se pudo obtener el ID del presupuesto';
+        return false;
+      }
+
+      // Eliminar el presupuesto usando DELETE
+      final res = await http.delete(
+        Uri.parse('$baseUrl/budgets/$id'),
+        headers: headers,
+      );
+
+      if (!(res.statusCode >= 200 && res.statusCode < 300)) {
+        lastErrorMessage = 'DELETE ${res.statusCode}: ${res.body}';
+        print('BudgetService DELETE failed: $lastErrorMessage');
+        return false;
+      }
+
+      return true;
+    } catch (e) {
+      lastErrorMessage = e.toString();
+      print('BudgetService delete exception: $lastErrorMessage');
+      return false;
+    }
+  }
 }

@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
+import 'category_service.dart';
+import 'transaction_service.dart';
 
 class GoalService {
   final String baseUrl = "https://co-fi-web.vercel.app/api/savings";
@@ -80,6 +82,81 @@ class GoalService {
 
     if (res.statusCode != 200) {
       throw Exception("Error al eliminar meta: ${res.body}");
+    }
+  }
+
+  /* 🟡 Obtener o crear categoría "Meta" */
+  Future<String?> getOrCreateMetaCategory() async {
+    try {
+      // Obtener todas las categorías
+      final categories = await CategoryService.getCategories();
+
+      // Buscar si ya existe la categoría "Meta"
+      for (final cat in categories) {
+        final name = (cat['name'] ?? '').toString().toLowerCase();
+        if (name == 'meta' || name == 'metas') {
+          return (cat['id'] ?? cat['_id'] ?? cat['categoryId'])?.toString();
+        }
+      }
+
+      // Si no existe, crearla
+      final newCategory = await CategoryService.createCategory(
+        name: 'Meta',
+        type: 'expense',
+        description: 'Movimientos de ahorro en metas',
+      );
+
+      if (newCategory != null) {
+        return (newCategory['id'] ??
+                newCategory['_id'] ??
+                newCategory['categoryId'])
+            ?.toString();
+      }
+
+      return null;
+    } catch (e) {
+      print('Error obteniendo/creando categoría Meta: $e');
+      return null;
+    }
+  }
+
+  /* 💰 Registrar ahorro en meta */
+  Future<void> recordSaving({
+    required String goalTitle,
+    required double amount,
+  }) async {
+    try {
+      final categoryId = await getOrCreateMetaCategory();
+
+      await TransactionService.createTransaction(
+        amount: amount,
+        type: 'expense',
+        note: goalTitle,
+        categoryId: categoryId,
+      );
+    } catch (e) {
+      print('Error registrando ahorro: $e');
+      throw Exception('Error al registrar movimiento de ahorro');
+    }
+  }
+
+  /* 💸 Registrar retiro de meta */
+  Future<void> recordWithdrawal({
+    required String goalTitle,
+    required double amount,
+  }) async {
+    try {
+      final categoryId = await getOrCreateMetaCategory();
+
+      await TransactionService.createTransaction(
+        amount: amount,
+        type: 'income',
+        note: goalTitle,
+        categoryId: categoryId,
+      );
+    } catch (e) {
+      print('Error registrando retiro: $e');
+      throw Exception('Error al registrar movimiento de retiro');
     }
   }
 }

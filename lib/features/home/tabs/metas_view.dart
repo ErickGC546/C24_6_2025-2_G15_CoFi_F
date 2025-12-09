@@ -834,10 +834,10 @@ class _MetasViewState extends State<MetasView> {
           ),
           child: Padding(
             padding: EdgeInsets.only(
-              left: 20,
-              right: 20,
-              top: 16,
-              bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+              left: 16,
+              right: 16,
+              top: 12,
+              bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -853,7 +853,7 @@ class _MetasViewState extends State<MetasView> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 10),
                 // Title + simple amount
                 Row(
                   children: [
@@ -884,7 +884,7 @@ class _MetasViewState extends State<MetasView> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 10),
                 TextField(
                   controller: amountController,
                   keyboardType: const TextInputType.numberWithOptions(
@@ -893,19 +893,19 @@ class _MetasViewState extends State<MetasView> {
                   decoration: InputDecoration(
                     labelText: 'Monto',
                     prefixText: 'S/ ',
-                    prefixIcon: Icon(
-                      Icons.attach_money,
-                      color: Colors.grey.shade600,
-                    ),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(14),
                       borderSide: BorderSide(color: Colors.grey.shade300),
                     ),
                     filled: true,
                     fillColor: Colors.grey.shade50,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 10),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
@@ -946,6 +946,13 @@ class _MetasViewState extends State<MetasView> {
                               'currentAmount': newSaved,
                             });
                           }
+
+                          // Registrar el ahorro como transacción (gasto)
+                          await _service.recordSaving(
+                            goalTitle: g0.title,
+                            amount: amount,
+                          );
+
                           final updated = Goal(
                             id: g0.id,
                             title: g0.title,
@@ -1000,7 +1007,7 @@ class _MetasViewState extends State<MetasView> {
                         if (gIndex < 0 || gIndex >= _goals.length) return;
                         final g0 = _goals[gIndex];
                         if (amount > g0.saved) {
-                          if (mounted)
+                          if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(
                                 content: Text(
@@ -1008,6 +1015,7 @@ class _MetasViewState extends State<MetasView> {
                                 ),
                               ),
                             );
+                          }
                           return;
                         }
                         _safeSetState(() => _isSaving = true);
@@ -1021,6 +1029,13 @@ class _MetasViewState extends State<MetasView> {
                               'currentAmount': newSaved,
                             });
                           }
+
+                          // Registrar el retiro como transacción (ingreso)
+                          await _service.recordWithdrawal(
+                            goalTitle: g0.title,
+                            amount: amount,
+                          );
+
                           final updated = Goal(
                             id: g0.id,
                             title: g0.title,
@@ -1031,13 +1046,14 @@ class _MetasViewState extends State<MetasView> {
                           _safeSetState(() {
                             _goals[gIndex] = updated;
                           });
-                          if (mounted)
+                          if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(content: Text('Retiro realizado')),
                             );
+                          }
                           Navigator.pop(ctx);
                         } catch (e) {
-                          if (mounted)
+                          if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
                                 content: Text(
@@ -1045,6 +1061,7 @@ class _MetasViewState extends State<MetasView> {
                                 ),
                               ),
                             );
+                          }
                         } finally {
                           _safeSetState(() => _isSaving = false);
                         }
@@ -1099,10 +1116,10 @@ class _MetasViewState extends State<MetasView> {
           ),
           child: Padding(
             padding: EdgeInsets.only(
-              left: 20,
-              right: 20,
-              top: 16,
-              bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+              left: 16,
+              right: 16,
+              top: 12,
+              bottom: MediaQuery.of(context).viewInsets.bottom + 16,
             ),
             child: SingleChildScrollView(
               child: Column(
@@ -1120,11 +1137,11 @@ class _MetasViewState extends State<MetasView> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 12),
                   // Header
                   Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.all(12),
                     decoration: const BoxDecoration(
                       gradient: LinearGradient(
                         colors: [Color(0xFF8B9DC3), Color(0xFF6B7FA8)],
@@ -1161,7 +1178,7 @@ class _MetasViewState extends State<MetasView> {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 12),
                   // Inputs
                   TextField(
                     controller: _titleController,
@@ -1188,17 +1205,18 @@ class _MetasViewState extends State<MetasView> {
                       ),
                       filled: true,
                       fillColor: Colors.grey.shade50,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
                     ),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 10),
                   TextField(
                     controller: _targetController,
                     decoration: InputDecoration(
                       labelText: 'Monto objetivo',
-                      prefixIcon: Icon(
-                        Icons.attach_money,
-                        color: Colors.grey.shade600,
-                      ),
+                      prefixText: 'S/ ',
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(14),
                         borderSide: BorderSide(color: Colors.grey.shade300),
@@ -1216,11 +1234,13 @@ class _MetasViewState extends State<MetasView> {
                       ),
                       filled: true,
                       fillColor: Colors.grey.shade50,
-                      prefixText: 'S/ ',
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
                     ),
-                    keyboardType: TextInputType.number,
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 10),
                   GestureDetector(
                     onTap: () async {
                       final now = DateTime.now();
@@ -1267,11 +1287,15 @@ class _MetasViewState extends State<MetasView> {
                           filled: true,
                           fillColor: Colors.grey.shade50,
                           hintText: 'Selecciona una fecha',
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 12,
+                          ),
                         ),
                       ),
                     ),
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 12),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
@@ -1339,7 +1363,7 @@ class _MetasViewState extends State<MetasView> {
                                     _safeSetState(() {
                                       _goals[index] = updated;
                                     });
-                                    if (mounted)
+                                    if (mounted) {
                                       ScaffoldMessenger.of(
                                         context,
                                       ).showSnackBar(
@@ -1347,6 +1371,7 @@ class _MetasViewState extends State<MetasView> {
                                           content: Text('Meta actualizada'),
                                         ),
                                       );
+                                    }
                                   } else {
                                     final created = await _service.createGoal(
                                       title: title,
@@ -1358,7 +1383,7 @@ class _MetasViewState extends State<MetasView> {
                                     _safeSetState(() {
                                       _goals.add(newGoal);
                                     });
-                                    if (mounted)
+                                    if (mounted) {
                                       ScaffoldMessenger.of(
                                         context,
                                       ).showSnackBar(
@@ -1366,10 +1391,11 @@ class _MetasViewState extends State<MetasView> {
                                           content: Text('Meta creada'),
                                         ),
                                       );
+                                    }
                                   }
                                   Navigator.pop(context);
                                 } catch (e) {
-                                  if (mounted)
+                                  if (mounted) {
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       SnackBar(
                                         content: Text(
@@ -1377,6 +1403,7 @@ class _MetasViewState extends State<MetasView> {
                                         ),
                                       ),
                                     );
+                                  }
                                 } finally {
                                   _safeSetState(() {
                                     _isSaving = false;
