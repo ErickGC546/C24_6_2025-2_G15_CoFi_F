@@ -15,7 +15,6 @@ class VoiceService {
     String audioPath,
   ) async {
     try {
-      // Obtener token de Firebase
       final token = await FirebaseAuth.instance.currentUser?.getIdToken();
       if (token == null) {
         throw Exception('No se pudo autenticar. Por favor inicia sesión.');
@@ -36,7 +35,9 @@ class VoiceService {
       }
 
       if (fileSize < 1000) {
-        throw Exception('La grabación es muy corta. Habla más tiempo');
+        throw Exception(
+          'La grabación es muy corta. Habla más tiempo (mínimo 2-3 segundos)',
+        );
       }
 
       if (fileSize > 10 * 1024 * 1024) {
@@ -53,17 +54,28 @@ class VoiceService {
       // Agregar archivo de audio
       final audioBytes = await audioFile.readAsBytes();
 
-      // Determinar el tipo MIME correcto basado en la extensión
-      String filename = 'recording.m4a';
-      String contentType = 'audio/m4a';
+      // Determinar el tipo MIME según formatos soportados por Gemini
+      // Soportados: WAV, MP3, AIFF, AAC, OGG Vorbis, FLAC
+      String filename = 'recording.wav';
+      String contentType = 'audio/wav';
 
-      if (audioPath.endsWith('.webm')) {
-        filename = 'recording.webm';
-        contentType = 'audio/webm';
-      } else if (audioPath.endsWith('.mp3')) {
+      if (audioPath.endsWith('.mp3')) {
         filename = 'recording.mp3';
         contentType = 'audio/mp3';
-      } else if (audioPath.endsWith('.wav')) {
+      } else if (audioPath.endsWith('.m4a') || audioPath.endsWith('.aac')) {
+        filename = 'recording.aac';
+        contentType = 'audio/aac';
+      } else if (audioPath.endsWith('.flac')) {
+        filename = 'recording.flac';
+        contentType = 'audio/flac';
+      } else if (audioPath.endsWith('.ogg')) {
+        filename = 'recording.ogg';
+        contentType = 'audio/ogg';
+      } else if (audioPath.endsWith('.aiff')) {
+        filename = 'recording.aiff';
+        contentType = 'audio/aiff';
+      } else if (audioPath.endsWith('.webm')) {
+        // WebM no está soportado directamente, usar wav como fallback
         filename = 'recording.wav';
         contentType = 'audio/wav';
       }
@@ -94,18 +106,40 @@ class VoiceService {
         final data = json.decode(response.body);
         print('✅ Transacción creada exitosamente');
         print('💾 Transcripción: ${data['transcription']}');
+        if (data['parsed'] != null) {
+          print('💰 Monto: ${data['parsed']['amount']}');
+          print('📝 Descripción: ${data['parsed']['description']}');
+          print(
+            '🏷️ Categoría: ${data['parsed']['categoryName'] ?? 'Sin categoría'}',
+          );
+        }
         return {'success': true, 'data': data};
       } else if (response.statusCode == 401) {
         throw Exception('No autorizado. Por favor inicia sesión nuevamente.');
       } else if (response.statusCode == 402) {
         final error = json.decode(response.body);
         throw Exception(
-          error['error'] ?? 'No tienes créditos de IA suficientes',
+          error['error'] ??
+              'No tienes créditos de IA suficientes para procesar audio',
         );
       } else if (response.statusCode == 400) {
         final error = json.decode(response.body);
         final errorMsg = error['error'] ?? 'No se pudo procesar el audio';
         print('⚠️ Error 400: $errorMsg');
+
+        // Mensajes mejorados según el backend
+        if (errorMsg.contains('No se detectó voz clara')) {
+          throw Exception(
+            'No se detectó voz clara en el audio.\n\n'
+            'Consejos:\n'
+            '✓ Habla cerca del micrófono (5-10 cm)\n'
+            '✓ Habla despacio y con claridad\n'
+            '✓ Evita ruido de fondo\n'
+            '✓ Mantén presionado el botón mientras hablas\n'
+            '✓ Graba mínimo 2-3 segundos\n'
+            '✓ Verifica los permisos de micrófono',
+          );
+        }
         throw Exception(errorMsg);
       } else if (response.statusCode == 500) {
         try {
@@ -114,7 +148,9 @@ class VoiceService {
           final details = error['details'] ?? '';
           print('❌ Error 500: $errorMsg');
           print('🔍 Detalles: $details');
-          throw Exception('Error al transcribir el audio. Intenta de nuevo.');
+          throw Exception(
+            'Error al transcribir el audio. Verifica que el archivo sea válido.',
+          );
         } catch (e) {
           print('❌ Error 500 sin detalles: ${response.body}');
           throw Exception('Error del servidor. Intenta de nuevo.');
@@ -143,6 +179,8 @@ class VoiceService {
       final transcription = data['transcription'] as String? ?? '';
       final parsed = data['parsed'] as Map<String, dynamic>?;
       final transaction = data['transaction'] as Map<String, dynamic>?;
+      final newBalance = data['newBalance'] as num?;
+      final creditsRemaining = data['creditsRemaining'] as int?;
 
       if (parsed == null || transaction == null) {
         return 'Transacción registrada exitosamente';
@@ -151,15 +189,32 @@ class VoiceService {
       final type = parsed['type'] as String? ?? 'expense';
       final amount = transaction['amount'] ?? 0.0;
       final description = parsed['description'] as String? ?? 'Sin descripción';
-      final typeText = type == 'income' ? 'Ingreso' : 'Gasto';
+      final categoryName = parsed['categoryName'] as String? ?? '';
+      final typeText = type == 'income' ? '💰 Ingreso' : '💸 Gasto';
+      final typeEmoji = type == 'income' ? '✅' : '📤';
 
-      return '''
-✅ $typeText registrado
-💰 Monto: S/ ${amount.toStringAsFixed(2)}
-📝 "${description}"
-🎤 "${transcription}"
-'''
-          .trim();
+      String result =
+          '''
+$typeEmoji $typeText registrado
+💵 Monto: S/ ${amount.toStringAsFixed(2)}
+📝 Descripción: "$description"
+''';
+
+      if (categoryName.isNotEmpty) {
+        result += '🏷️ Categoría: $categoryName\n';
+      }
+
+      result += '🎤 Dijiste: "$transcription"\n';
+
+      if (newBalance != null) {
+        result += '💳 Nuevo saldo: S/ ${newBalance.toStringAsFixed(2)}\n';
+      }
+
+      if (creditsRemaining != null) {
+        result += '🪙 Créditos IA restantes: $creditsRemaining';
+      }
+
+      return result.trim();
     } catch (e) {
       return 'Transacción registrada exitosamente';
     }
@@ -172,13 +227,15 @@ class VoiceService {
     if (errorStr.contains('No autorizado')) {
       return '🔒 Por favor inicia sesión nuevamente';
     } else if (errorStr.contains('créditos')) {
-      return '💳 No tienes créditos de IA suficientes';
-    } else if (errorStr.contains('No se pudo detectar audio')) {
-      return '🎤 No se detectó audio. Habla más claro y cerca del micrófono';
+      return '💳 No tienes créditos de IA suficientes para procesar audio';
+    } else if (errorStr.contains('No se detectó voz clara')) {
+      return errorStr.replaceAll('Exception:', '').trim();
     } else if (errorStr.contains('procesar')) {
       return '⚠️ No se pudo procesar el audio. Intenta de nuevo';
     } else if (errorStr.contains('Connection')) {
       return '📡 Error de conexión. Verifica tu internet';
+    } else if (errorStr.contains('muy corta')) {
+      return '⏱️ Grabación muy corta. Habla por al menos 2-3 segundos';
     } else {
       return '❌ Error: ${errorStr.replaceAll('Exception:', '').trim()}';
     }
