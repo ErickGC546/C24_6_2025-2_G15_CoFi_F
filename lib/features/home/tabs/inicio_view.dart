@@ -2432,6 +2432,19 @@ class _InicioViewState extends State<InicioView> {
                         accounts,
                       );
                     }
+                  } else {
+                    // Fallback: si backend NO devuelve newBalance, revertir localmente
+                    // amount está almacenado como ingreso>0, gasto<0
+                    // Al eliminar un movimiento debemos quitar su efecto: totalBalance -= amount
+                    final double amount = _toDouble(deletedMovement['amount']);
+                    totalBalance -= amount;
+                    _totalBalanceNotifier.value = totalBalance;
+                    if (accounts.isNotEmpty) {
+                      accounts[0]['balance'] = totalBalance;
+                      _accountsNotifier.value = List<Map<String, dynamic>>.from(
+                        accounts,
+                      );
+                    }
                   }
                 }
 
@@ -2542,16 +2555,18 @@ class _InicioViewState extends State<InicioView> {
                   }
                 }
 
-                // ✅ Actualizar PRESUPUESTO: Solo restar si era un gasto (amount < 0)
-                if (amount < 0) {
-                  monthlyBudget -= amount.abs();
-                  _monthlyBudgetNotifier.value = monthlyBudget;
-                }
-
+                // Eliminar localmente y recalcular presupuesto desde cero
                 movements.removeAt(index);
                 _movementsNotifier.value = List<Map<String, dynamic>>.from(
                   movements,
                 );
+
+                // Recalcular monthlyBudget (suma de todos los gastos actuales)
+                monthlyBudget = movements.fold(0.0, (sum, m) {
+                  final amt2 = _toDouble(m['amount']);
+                  return sum + (amt2 < 0 ? amt2.abs() : 0.0);
+                });
+                _monthlyBudgetNotifier.value = monthlyBudget;
 
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
@@ -2944,6 +2959,19 @@ class _InicioViewState extends State<InicioView> {
                                   _totalBalanceNotifier.value = totalBalance;
 
                                   // Actualizar balance en accounts
+                                  if (accounts.isNotEmpty) {
+                                    accounts[0]['balance'] = totalBalance;
+                                    _accountsNotifier.value =
+                                        List<Map<String, dynamic>>.from(
+                                          accounts,
+                                        );
+                                  }
+                                } else {
+                                  // Fallback: aplicar solo la diferencia (delta) entre nuevo y original
+                                  final double delta =
+                                      newAmount - originalAmount;
+                                  totalBalance += delta;
+                                  _totalBalanceNotifier.value = totalBalance;
                                   if (accounts.isNotEmpty) {
                                     accounts[0]['balance'] = totalBalance;
                                     _accountsNotifier.value =

@@ -868,7 +868,8 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
   }
 
   Future<void> _changeRole(String memberId) async {
-    final roles = ['member', 'admin'];
+    // Solo Owner puede cambiar roles, incluyendo promover a Admin u Owner
+    final roles = ['member', 'admin', 'owner'];
     String? newRole = roles.first;
     final result = await showDialog<String?>(
       context: context,
@@ -877,10 +878,14 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: roles.map((r) {
+            String displayRole = r;
+            if (r == 'owner') displayRole = '👑 Líder (Owner)';
+            if (r == 'admin') displayRole = '⭐ Admin';
+            if (r == 'member') displayRole = '👤 Miembro';
             return RadioListTile<String>(
               value: r,
               groupValue: newRole,
-              title: Text(r),
+              title: Text(displayRole),
               onChanged: (v) => newRole = v,
             );
           }).toList(),
@@ -1039,8 +1044,8 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                     const SizedBox(height: 12),
                     Text(
                       isOwner
-                          ? 'Si sales, el grupo será eliminado permanentemente junto con toda su información.'
-                          : 'Al salir del grupo, perderás acceso a todas sus funciones y contenido.',
+                          ? 'Si sales, el grupo será eliminado permanentemente junto con toda su información. Tus contribuciones serán devueltas antes de eliminar el grupo.'
+                          : 'Al salir del grupo, tus contribuciones en las metas serán devueltas automáticamente y perderás acceso al grupo.',
                       style: TextStyle(
                         fontSize: 14,
                         color: Colors.grey.shade600,
@@ -1110,6 +1115,251 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
     if (confirm != true) return;
     setState(() => _isLoading = true);
     try {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+
+      // Devolver contribuciones tanto para Owner como para Member/Admin
+      if (uid != null && _savings.isNotEmpty) {
+        // Mostrar diálogo de progreso
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => WillPopScope(
+            onWillPop: () async => false,
+            child: Dialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CircularProgressIndicator(),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Devolviendo tus contribuciones...',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.grey.shade800,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Por favor espera',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.grey.shade600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+
+        double totalDevuelto = 0.0;
+        int metasAfectadas = 0;
+
+        // Recorrer todas las metas del grupo
+        for (final saving in _savings) {
+          final savingId =
+              saving['id']?.toString() ?? saving['_id']?.toString();
+          if (savingId == null) continue;
+
+          final savingTitle = saving['title'] ?? saving['name'] ?? 'Meta';
+
+          // Obtener movimientos de esta meta
+          List movements = [];
+          try {
+            final detail = await _groupService.getSavingById(savingId);
+            movements = detail['movements'] ?? detail['contributions'] ?? [];
+            if (movements.isEmpty) {
+              movements = await _groupService.getSavingMovements(
+                savingId,
+                groupId: widget.groupId,
+              );
+            }
+          } catch (e) {
+            print('Error obteniendo movimientos de meta $savingId: $e');
+            continue;
+          }
+
+          // Filtrar solo las contribuciones del usuario actual (depósitos)
+          double userContributions = 0.0;
+          for (final movement in movements) {
+            if (movement is! Map) continue;
+
+            // Verificar si el movimiento pertenece al usuario actual
+            final movementUserId =
+                movement['userId']?.toString() ??
+                movement['user']?['id']?.toString() ??
+                movement['user']?['_id']?.toString();
+
+            if (movementUserId != uid) continue;
+
+            // Verificar si es un depósito (no retiro)
+            final type =
+                (movement['type'] ??
+                        movement['movementType'] ??
+                        movement['transaction_type'])
+                    ?.toString()
+                    .toLowerCase();
+
+            if (type != null &&
+                (type.contains('withdraw') || type.contains('reti'))) {
+              continue; // Ignorar retiros anteriores
+            }
+
+            // Sumar la contribución
+            final amount = _parseToDouble(
+              movement['amount'] ?? movement['value'] ?? 0,
+            );
+            if (amount > 0) {
+              userContributions += amount;
+            }
+          }
+
+          // Si el usuario tiene contribuciones en esta meta, hacer retiro automático
+          if (userContributions > 0) {
+            try {
+              await _groupService.createSavingMovement(
+                savingId: savingId,
+                amount: userContributions,
+                type: 'withdraw',
+                note: _myRole == 'owner'
+                    ? 'Devolución automática - Grupo eliminado por el líder'
+                    : 'Devolución automática al salir del grupo',
+                groupId: widget.groupId,
+              );
+
+              // Registrar el retiro como transacción (ingreso) en el historial personal
+              try {
+                await _goalService.recordWithdrawal(
+                  goalTitle: savingTitle.toString(),
+                  amount: userContributions,
+                );
+              } catch (e) {
+                print('Error registrando transacción de devolución: $e');
+              }
+
+              totalDevuelto += userContributions;
+              metasAfectadas++;
+            } catch (e) {
+              print('Error devolviendo contribución de meta $savingId: $e');
+            }
+          }
+        }
+
+        // Cerrar diálogo de progreso
+        if (mounted) Navigator.of(context).pop();
+
+        // Mostrar resumen de devolución si hubo contribuciones
+        if (totalDevuelto > 0 && mounted) {
+          await showDialog(
+            context: context,
+            builder: (_) => AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              title: Row(
+                children: [
+                  Icon(
+                    Icons.check_circle,
+                    color: Colors.green.shade600,
+                    size: 28,
+                  ),
+                  const SizedBox(width: 12),
+                  const Text('Devolución Completada'),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Se devolvieron tus contribuciones:',
+                    style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
+                  ),
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.green.shade50,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.green.shade200),
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'Total devuelto:',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w600,
+                                color: Colors.grey.shade800,
+                              ),
+                            ),
+                            Text(
+                              'S/ ${totalDevuelto.toStringAsFixed(2)}',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.green.shade700,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'Metas afectadas:',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.grey.shade600,
+                              ),
+                            ),
+                            Text(
+                              '$metasAfectadas',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.grey.shade800,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green.shade600,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  child: const Text(
+                    'Entendido',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+      }
+
+      // Ahora ejecutar la acción correspondiente
       if (_myRole == 'owner') {
         // Owner leaving -> delete the group
         await _groupService.deleteGroup(widget.groupId!);
@@ -1132,6 +1382,11 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
         Navigator.of(context).pop(true);
       }
     } catch (e) {
+      // Cerrar diálogo de progreso si está abierto
+      if (mounted && Navigator.canPop(context)) {
+        Navigator.of(context).pop();
+      }
+
       // Show a cleaner message (remove the "Exception: " prefix if present)
       String msg;
       try {
@@ -2596,9 +2851,23 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                                     ),
                                                     onSelected: (v) async {
                                                       if (v == 'role') {
-                                                        await _changeRole(
-                                                          memberId,
-                                                        );
+                                                        // Solo el owner puede cambiar roles
+                                                        if (_myRole ==
+                                                            'owner') {
+                                                          await _changeRole(
+                                                            memberId,
+                                                          );
+                                                        } else {
+                                                          ScaffoldMessenger.of(
+                                                            context,
+                                                          ).showSnackBar(
+                                                            const SnackBar(
+                                                              content: Text(
+                                                                'Solo el líder del grupo puede cambiar roles',
+                                                              ),
+                                                            ),
+                                                          );
+                                                        }
                                                       } else if (v ==
                                                           'delete') {
                                                         await _deleteMember(
@@ -2606,42 +2875,81 @@ class _GroupDetailPageState extends State<GroupDetailPage> {
                                                         );
                                                       }
                                                     },
-                                                    itemBuilder: (_) => [
-                                                      const PopupMenuItem(
-                                                        value: 'role',
-                                                        child: Row(
-                                                          children: [
-                                                            Icon(
-                                                              Icons
-                                                                  .admin_panel_settings,
-                                                              size: 20,
+                                                    itemBuilder: (_) {
+                                                      // Solo mostrar menú si eres owner
+                                                      if (_myRole != 'owner')
+                                                        return [];
+
+                                                      // Si el owner se está viendo a sí mismo
+                                                      if (matchesCurrentUser) {
+                                                        // Solo mostrar "Cambiar rol", NO "Eliminar"
+                                                        return [
+                                                          const PopupMenuItem(
+                                                            value: 'role',
+                                                            child: Row(
+                                                              children: [
+                                                                Icon(
+                                                                  Icons
+                                                                      .admin_panel_settings,
+                                                                  size: 20,
+                                                                ),
+                                                                SizedBox(
+                                                                  width: 8,
+                                                                ),
+                                                                Text(
+                                                                  'Cambiar rol',
+                                                                ),
+                                                              ],
                                                             ),
-                                                            SizedBox(width: 8),
-                                                            Text('Cambiar rol'),
-                                                          ],
+                                                          ),
+                                                        ];
+                                                      }
+
+                                                      // El owner está viendo a otro miembro
+                                                      return [
+                                                        const PopupMenuItem(
+                                                          value: 'role',
+                                                          child: Row(
+                                                            children: [
+                                                              Icon(
+                                                                Icons
+                                                                    .admin_panel_settings,
+                                                                size: 20,
+                                                              ),
+                                                              SizedBox(
+                                                                width: 8,
+                                                              ),
+                                                              Text(
+                                                                'Cambiar rol',
+                                                              ),
+                                                            ],
+                                                          ),
                                                         ),
-                                                      ),
-                                                      const PopupMenuItem(
-                                                        value: 'delete',
-                                                        child: Row(
-                                                          children: [
-                                                            Icon(
-                                                              Icons.delete,
-                                                              size: 20,
-                                                              color: Colors.red,
-                                                            ),
-                                                            SizedBox(width: 8),
-                                                            Text(
-                                                              'Eliminar',
-                                                              style: TextStyle(
+                                                        const PopupMenuItem(
+                                                          value: 'delete',
+                                                          child: Row(
+                                                            children: [
+                                                              Icon(
+                                                                Icons.delete,
+                                                                size: 20,
                                                                 color:
                                                                     Colors.red,
                                                               ),
-                                                            ),
-                                                          ],
+                                                              SizedBox(
+                                                                width: 8,
+                                                              ),
+                                                              Text(
+                                                                'Eliminar',
+                                                                style: TextStyle(
+                                                                  color: Colors
+                                                                      .red,
+                                                                ),
+                                                              ),
+                                                            ],
+                                                          ),
                                                         ),
-                                                      ),
-                                                    ],
+                                                      ];
+                                                    },
                                                   )
                                                 : null,
                                           ),

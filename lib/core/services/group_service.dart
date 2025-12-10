@@ -2,6 +2,26 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
 
+/// 📋 SISTEMA DE ROLES EN GRUPOS
+///
+/// Hay 3 roles en los grupos:
+/// 1. **Owner (Líder/Creador)**: Máximos privilegios
+///    - ✅ Puede crear, editar y eliminar metas del grupo
+///    - ✅ Puede promover miembros a Admin u Owner
+///    - ✅ Puede gestionar todos los aspectos del grupo
+///
+/// 2. **Admin (Administrador)**: Privilegios de administración
+///    - ✅ Puede crear, editar y eliminar metas del grupo
+///    - ❌ NO puede cambiar roles de otros usuarios
+///
+/// 3. **Member (Miembro)**: Privilegios básicos
+///    - ✅ Puede ver las metas del grupo
+///    - ✅ Puede participar en el grupo
+///    - ❌ NO puede crear, editar o eliminar metas
+///    - ❌ NO puede cambiar roles
+///
+/// Solo el Owner puede dar permisos de Admin u Owner a los miembros.
+
 class GroupService {
   final String baseUrl = "https://co-fi-web.vercel.app/api/groups";
   // Separate base for savings endpoints (they live under /api/savings)
@@ -13,6 +33,26 @@ class GroupService {
       throw Exception('Usuario no autenticado');
     }
     return await user.getIdToken();
+  }
+
+  /// ✅ Verificar si el usuario puede gestionar metas (crear, editar, eliminar)
+  /// Solo Owner y Admin pueden gestionar metas
+  bool canManageGoals(String? userRole) {
+    if (userRole == null) return false;
+    return userRole == 'owner' || userRole == 'admin';
+  }
+
+  /// ✅ Verificar si el usuario puede cambiar roles de otros usuarios
+  /// Solo Owner puede cambiar roles
+  bool canChangeRoles(String? userRole) {
+    if (userRole == null) return false;
+    return userRole == 'owner';
+  }
+
+  /// ✅ Verificar si el usuario puede ver las metas
+  /// Todos los miembros pueden ver las metas
+  bool canViewGoals(String? userRole) {
+    return true; // Todos pueden ver
   }
 
   /// 🟢 Crear grupo
@@ -213,8 +253,9 @@ class GroupService {
     }
   }
 
-  /// � Crear meta (savings)
+  /// 💾 Crear meta (savings)
   /// Body: { title, targetAmount, targetDate?, groupId? }
+  /// Requiere rol de Admin u Owner si es para un grupo
   Future<Map<String, dynamic>> createSaving({
     required String title,
     required num targetAmount,
@@ -248,10 +289,16 @@ class GroupService {
                   parsed['detail'] ??
                   response.body)
             : response.body;
+        if (response.statusCode == 403) {
+          throw Exception(
+            'No tienes permisos para crear metas. Solo Admin y Owner pueden crear metas.',
+          );
+        }
         throw Exception(
           'Error al crear meta: $message (status ${response.statusCode})',
         );
-      } catch (_) {
+      } catch (e) {
+        if (e.toString().contains('No tienes permisos')) rethrow;
         // Fallback if body is not JSON or parsing fails
         final bodyText = response.body.trim().isEmpty
             ? 'HTTP ${response.statusCode}'
@@ -380,6 +427,7 @@ class GroupService {
   }
 
   /// 🟠 Actualizar meta
+  /// Requiere rol de Admin u Owner si es para un grupo
   Future<Map<String, dynamic>> updateSaving({
     required String id,
     required Map<String, dynamic> body,
@@ -397,11 +445,18 @@ class GroupService {
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
     } else {
+      // Check for permission errors
+      if (response.statusCode == 403) {
+        throw Exception(
+          'No tienes permisos para editar metas. Solo Admin y Owner pueden editar metas.',
+        );
+      }
       throw Exception("Error al actualizar meta: ${response.body}");
     }
   }
 
   /// 🔴 Eliminar meta
+  /// Requiere rol de Admin u Owner si es para un grupo
   Future<void> deleteSaving(String id) async {
     final token = await _getToken();
     final response = await http.delete(
@@ -410,6 +465,12 @@ class GroupService {
     );
 
     if (response.statusCode != 200) {
+      // Check for permission errors
+      if (response.statusCode == 403) {
+        throw Exception(
+          'No tienes permisos para eliminar metas. Solo Admin y Owner pueden eliminar metas.',
+        );
+      }
       throw Exception("Error al eliminar meta: ${response.body}");
     }
   }
@@ -671,6 +732,7 @@ class GroupService {
   }
 
   /// 🟠 Actualizar rol de miembro
+  /// Solo el Owner puede cambiar roles de otros usuarios
   Future<Map<String, dynamic>> updateMemberRole({
     required String memberId,
     required String newRole,
@@ -688,6 +750,12 @@ class GroupService {
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
     } else {
+      // Check for permission errors
+      if (response.statusCode == 403) {
+        throw Exception(
+          'No tienes permisos para cambiar roles. Solo el Owner puede cambiar roles.',
+        );
+      }
       throw Exception("Error al actualizar rol: ${response.body}");
     }
   }
