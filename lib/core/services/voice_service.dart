@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
+import 'package:path/path.dart' as p;
 
 /// Servicio para manejar transacciones por voz
 class VoiceService {
@@ -12,8 +13,9 @@ class VoiceService {
   /// Envía el archivo de audio al backend para procesar la transacción
   /// Retorna un Map con el resultado del procesamiento
   static Future<Map<String, dynamic>> sendVoiceTransaction(
-    String audioPath,
-  ) async {
+    String audioPath, {
+    bool parseOnly = false,
+  }) async {
     try {
       final token = await FirebaseAuth.instance.currentUser?.getIdToken();
       if (token == null) {
@@ -40,13 +42,14 @@ class VoiceService {
         );
       }
 
-      if (fileSize > 10 * 1024 * 1024) {
-        // 10MB
+      if (fileSize > 4 * 1024 * 1024) {
+        // 4MB
         throw Exception('El archivo es muy grande. Graba menos tiempo');
       }
 
       // Crear multipart request
-      final request = http.MultipartRequest('POST', Uri.parse(_backendUrl));
+      final url = parseOnly ? '$_backendUrl?parseOnly=true' : _backendUrl;
+      final request = http.MultipartRequest('POST', Uri.parse(url));
 
       // Agregar headers
       request.headers['Authorization'] = 'Bearer $token';
@@ -54,43 +57,47 @@ class VoiceService {
       // Agregar archivo de audio
       final audioBytes = await audioFile.readAsBytes();
 
-      // Determinar el tipo MIME según formatos soportados por Gemini
-      // Soportados: WAV, MP3, AIFF, AAC, OGG Vorbis, FLAC
-      String filename = 'recording.wav';
-      String contentType = 'audio/wav';
+      // Determinar el tipo MIME compatible con el backend de voz
+      final filename = p.basename(audioPath);
+      final extension = p.extension(filename).toLowerCase();
+      MediaType mediaType;
 
-      if (audioPath.endsWith('.mp3')) {
-        filename = 'recording.mp3';
-        contentType = 'audio/mp3';
-      } else if (audioPath.endsWith('.m4a') || audioPath.endsWith('.aac')) {
-        filename = 'recording.aac';
-        contentType = 'audio/aac';
-      } else if (audioPath.endsWith('.flac')) {
-        filename = 'recording.flac';
-        contentType = 'audio/flac';
-      } else if (audioPath.endsWith('.ogg')) {
-        filename = 'recording.ogg';
-        contentType = 'audio/ogg';
-      } else if (audioPath.endsWith('.aiff')) {
-        filename = 'recording.aiff';
-        contentType = 'audio/aiff';
-      } else if (audioPath.endsWith('.webm')) {
-        // WebM no está soportado directamente, usar wav como fallback
-        filename = 'recording.wav';
-        contentType = 'audio/wav';
+      switch (extension) {
+        case '.mp3':
+          mediaType = MediaType('audio', 'mp3');
+          break;
+        case '.m4a':
+          mediaType = MediaType('audio', 'm4a');
+          break;
+        case '.aac':
+          mediaType = MediaType('audio', 'aac');
+          break;
+        case '.flac':
+          mediaType = MediaType('audio', 'flac');
+          break;
+        case '.ogg':
+          mediaType = MediaType('audio', 'ogg');
+          break;
+        case '.aiff':
+          mediaType = MediaType('audio', 'aiff');
+          break;
+        case '.wav':
+        default:
+          mediaType = MediaType('audio', 'wav');
+          break;
       }
 
       final multipartFile = http.MultipartFile.fromBytes(
         'audio',
         audioBytes,
         filename: filename,
-        contentType: MediaType.parse(contentType),
+        contentType: mediaType,
       );
       request.files.add(multipartFile);
 
       print('🎤 Enviando audio al backend...');
       print(
-        '📎 Archivo: $filename, tipo: $contentType, tamaño: ${audioBytes.length} bytes',
+        '📎 Archivo: $filename, tipo: ${mediaType.type}/${mediaType.subtype}, tamaño: ${audioBytes.length} bytes',
       );
 
       // Enviar request
@@ -173,6 +180,11 @@ class VoiceService {
     }
   }
 
+  /// Envío solo para parsear/transcribir sin intención de guardar.
+  static Future<Map<String, dynamic>> sendVoiceParse(String audioPath) async {
+    return await sendVoiceTransaction(audioPath, parseOnly: true);
+  }
+
   /// Formatea el resultado de la transacción para mostrar al usuario
   static String formatTransactionResult(Map<String, dynamic> data) {
     try {
@@ -235,7 +247,7 @@ $typeEmoji $typeText registrado
     } else if (errorStr.contains('Connection')) {
       return '📡 Error de conexión. Verifica tu internet';
     } else if (errorStr.contains('muy corta')) {
-      return '⏱️ Grabación muy corta. Habla por al menos 2-3 segundos';
+      return '⏱️ Grabación muy corta. Habla por al menos 5-10 segundos';
     } else {
       return '❌ Error: ${errorStr.replaceAll('Exception:', '').trim()}';
     }

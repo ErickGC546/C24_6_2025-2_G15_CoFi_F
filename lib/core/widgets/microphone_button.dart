@@ -4,6 +4,7 @@ import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:cofi/core/services/voice_service.dart';
+import 'package:cofi/core/services/transaction_service.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
 /// Widget modular del botón de micrófono con animaciones
@@ -18,6 +19,7 @@ class MicrophoneButton extends StatefulWidget {
 
 class _MicrophoneButtonState extends State<MicrophoneButton>
     with TickerProviderStateMixin {
+  static const int _groqBitRate = 128000;
   bool _isListening = false;
   bool _hasPermission = false;
   bool _isProcessing = false;
@@ -154,7 +156,7 @@ class _MicrophoneButtonState extends State<MicrophoneButton>
       await _audioRecorder.start(
         const RecordConfig(
           encoder: AudioEncoder.aacLc,
-          bitRate: 128000,
+          bitRate: _groqBitRate,
           sampleRate: 44100,
         ),
         path: _audioPath!,
@@ -214,31 +216,10 @@ class _MicrophoneButtonState extends State<MicrophoneButton>
     _scaleController.reverse();
 
     try {
-      // Detener grabación
+      // Detener grabación y validar inmediatamente el archivo resultante
       final path = await _audioRecorder.stop();
-
-      if (path == null || path.isEmpty) {
-        throw Exception('No se guardó el audio');
-      }
-
-      // Validar que el archivo existe y tiene contenido
-      final audioFile = File(path);
-
-      if (!await audioFile.exists()) {
-        throw Exception('El archivo de audio no existe');
-      }
-
-      final fileSize = await audioFile.length();
-      debugPrint('🎤 Grabación finalizada: $path');
-      debugPrint('📁 Tamaño del archivo: $fileSize bytes');
-
-      if (fileSize == 0) {
-        throw Exception('El archivo de audio está vacío');
-      }
-
-      if (fileSize < 1000) {
-        throw Exception('La grabación es muy corta. Habla más tiempo');
-      }
+      final validatedFile = await _validateRecordedFile(path);
+      final validatedPath = validatedFile.path;
 
       // Mostrar feedback de procesamiento
       if (mounted) {
@@ -269,11 +250,11 @@ class _MicrophoneButtonState extends State<MicrophoneButton>
       }
 
       // Procesar la transacción
-      await _processTransaction(path);
+      await _processTransaction(validatedPath);
 
       // Eliminar archivo temporal
       try {
-        final file = File(path);
+        final file = File(validatedPath);
         if (await file.exists()) {
           await file.delete();
         }
@@ -308,92 +289,186 @@ class _MicrophoneButtonState extends State<MicrophoneButton>
     }
   }
 
+  Future<File> _validateRecordedFile(String? path) async {
+    if (path == null || path.isEmpty) {
+      throw Exception('No se guardó el audio');
+    }
+
+    final audioFile = File(path);
+
+    if (!await audioFile.exists()) {
+      throw Exception('El archivo de audio no existe');
+    }
+
+    final fileSize = await audioFile.length();
+    debugPrint('🎤 Grabación finalizada: $path');
+    debugPrint('📁 Tamaño del archivo: $fileSize bytes');
+
+    if (fileSize == 0) {
+      throw Exception('El archivo de audio está vacío');
+    }
+
+    if (fileSize < 1000) {
+      throw Exception('La grabación es muy corta. Habla más tiempo');
+    }
+
+    return audioFile;
+  }
+
   Future<void> _processTransaction(String audioPath) async {
     try {
       debugPrint('📤 Enviando audio al backend...');
-
-      // Enviar el audio al backend para procesar la transacción completa
-      final result = await VoiceService.sendVoiceTransaction(audioPath);
+      // Primero pedir solo PARSE (no guardar) al backend
+      final result = await VoiceService.sendVoiceParse(audioPath);
 
       if (result['success'] != true) {
         throw Exception('Error al procesar la transacción');
       }
 
-      debugPrint('✅ Respuesta del backend recibida');
+      debugPrint('✅ Respuesta del backend (parse) recibida');
 
-      // Obtener datos de la transacción
       final data = result['data'];
-      final transcription =
-          data['transcription']?.toString().trim() ?? 'Audio procesado';
-      final transaction = data['transaction'] as Map<String, dynamic>?;
+      final transcription = data['transcription']?.toString().trim() ?? '';
       final parsed = data['parsed'] as Map<String, dynamic>?;
+      final possibleTransaction = data['transaction'] as Map<String, dynamic>?;
 
-      if (transaction == null) {
-        throw Exception('No se pudo crear la transacción');
+      if (parsed == null) {
+        throw Exception('No se pudo interpretar la transacción');
       }
 
-      // Extraer información de la transacción
-      final amount = transaction['amount']?.toString() ?? '0';
-      final type = (parsed?['type'] ?? 'expense').toString();
-      final typeText = type == 'income' ? 'Ingreso' : 'Gasto';
-      final description = parsed?['description']?.toString() ?? transcription;
+      // Construir mensaje de confirmación
+      final type = (parsed['type'] ?? 'expense').toString();
+      final typeText = type == 'income' ? 'ingreso' : 'gasto';
+      final amount = (parsed['amount'] ?? parsed['value'] ?? 0).toString();
+      final description = (parsed['description'] ?? '').toString();
+      final categoryName = (parsed['categoryName'] ?? '').toString();
 
-      debugPrint('💾 Transacción guardada: $typeText de S/ $amount');
+      final confirmMessageBuffer = StringBuffer();
+      confirmMessageBuffer.write('He entendido: $typeText de $amount soles');
+      if (categoryName.isNotEmpty)
+        confirmMessageBuffer.write(' en $categoryName');
+      if (description.isNotEmpty)
+        confirmMessageBuffer.write(', concepto: $description');
+      confirmMessageBuffer.write('. ¿Deseas guardar? Di sí o no.');
 
-      // Mostrar confirmación con voz
-      await _speak(
-        "Transacción guardada exitosamente. $typeText de $amount soles",
-      );
+      final confirmPrompt = confirmMessageBuffer.toString();
 
-      // Mostrar feedback visual de éxito
-      if (mounted) {
-        ScaffoldMessenger.of(context).clearSnackBars();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Row(
-                  children: [
-                    Icon(Icons.check_circle, color: Colors.white, size: 24),
-                    SizedBox(width: 8),
-                    Text(
-                      '¡Transacción guardada!',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text('💰 $typeText: S/ $amount'),
-                if (description.isNotEmpty && description != amount)
-                  Text('📝 $description'),
-                const SizedBox(height: 4),
-                Text(
-                  '🎤 "$transcription"',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontStyle: FontStyle.italic,
-                    color: Colors.white.withOpacity(0.9),
-                  ),
-                ),
-              ],
-            ),
-            backgroundColor: Colors.green.shade600,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            duration: const Duration(seconds: 4),
+      // Preguntar por voz
+      await _speak(confirmPrompt);
+
+      // Grabar una respuesta corta (3s) para confirmación
+      final directory = await getTemporaryDirectory();
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final confirmPath = '${directory.path}/confirm_$ts.m4a';
+
+      try {
+        await _audioRecorder.start(
+          const RecordConfig(
+            encoder: AudioEncoder.aacLc,
+            bitRate: _groqBitRate,
+            sampleRate: 44100,
           ),
+          path: confirmPath,
         );
 
-        // Notificar al padre para recargar datos (actualizar movimientos recientes)
-        await Future.delayed(const Duration(milliseconds: 500));
-        widget.onTranscriptionComplete?.call();
+        // Escuchar 3 segundos
+        await Future.delayed(const Duration(seconds: 3));
+
+        final stopPath = await _audioRecorder.stop();
+        final confirmAudioPath = (stopPath != null && stopPath.isNotEmpty)
+            ? stopPath
+            : confirmPath;
+
+        if (confirmAudioPath.isEmpty) {
+          throw Exception('No se pudo grabar la confirmación');
+        }
+
+        // Enviar audio de confirmación para transcribir
+        final confirmResult = await VoiceService.sendVoiceParse(
+          confirmAudioPath,
+        );
+        final confirmData = confirmResult['data'];
+        final confirmTranscription = (confirmData != null)
+            ? (confirmData['transcription']?.toString().toLowerCase() ?? '')
+            : '';
+
+        final confirmed =
+            confirmTranscription.contains('sí') ||
+            confirmTranscription.contains('si') ||
+            confirmTranscription.contains('confirmo') ||
+            confirmTranscription.contains('guardar');
+
+        // Si backend ya creó la transacción en el parse step (por seguridad), guardamos su id
+        final createdId = possibleTransaction != null
+            ? (possibleTransaction['id'] ?? possibleTransaction['_id'])
+                  ?.toString()
+            : null;
+
+        if (!confirmed) {
+          // Usuario dijo no -> si la transacción ya fue creada, intentar eliminarla
+          if (createdId != null) {
+            try {
+              await TransactionService.deleteTransaction(createdId);
+            } catch (e) {
+              debugPrint(
+                '⚠️ No se pudo eliminar transacción creada automáticamente: $e',
+              );
+            }
+          }
+
+          await _speak('Operación cancelada. No se guardó la transacción.');
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).clearSnackBars();
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('Operación cancelada. No se guardó.'),
+                backgroundColor: Colors.orange.shade600,
+              ),
+            );
+          }
+
+          return;
+        }
+
+        // Usuario confirmó -> crear transacción usando TransactionService
+        final parsedAmount = double.tryParse(amount.toString()) ?? 0.0;
+        final note = description.isNotEmpty ? description : transcription;
+        final categoryId = parsed['categoryId']?.toString();
+
+        await TransactionService.createTransaction(
+          amount: parsedAmount,
+          type: type,
+          note: note,
+          categoryId: categoryId,
+        );
+
+        // newBalance se ignora intencionalmente (el backend actualiza el estado global)
+
+        await _speak('Transacción guardada exitosamente.');
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).clearSnackBars();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '✓ $typeText de S/ ${parsedAmount.toStringAsFixed(2)} guardado',
+              ),
+              backgroundColor: Colors.green.shade600,
+            ),
+          );
+
+          widget.onTranscriptionComplete?.call();
+        }
+      } catch (e) {
+        debugPrint('❌ Error en confirmación por voz: $e');
+        rethrow;
+      } finally {
+        // Limpieza del archivo de confirmación
+        try {
+          final f = File(confirmPath);
+          if (await f.exists()) await f.delete();
+        } catch (_) {}
       }
     } catch (e) {
       debugPrint('❌ Error al procesar transacción: $e');

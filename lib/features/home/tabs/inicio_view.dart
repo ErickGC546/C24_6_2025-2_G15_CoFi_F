@@ -59,6 +59,27 @@ class _InicioViewState extends State<InicioView> {
     setState(fn);
   }
 
+  Future<bool> _confirmBeforeSave(BuildContext ctx, String message) async {
+    final result = await showDialog<bool>(
+      context: ctx,
+      builder: (_) => AlertDialog(
+        title: const Text('Confirmar'),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('No'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Sí'),
+          ),
+        ],
+      ),
+    );
+    return result == true;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -3353,7 +3374,17 @@ class _InicioViewState extends State<InicioView> {
                                       });
                                     }
 
-                                    // 2. Registrar el AHORRO como una TRANSACCIÓN (GASTO)
+                                    // 2. Confirmar y registrar el AHORRO como una TRANSACCIÓN (GASTO)
+                                    final confirmSave = await _confirmBeforeSave(
+                                      context,
+                                      '¿Estás seguro que quieres guardar este ahorro de S/ ${amount.toStringAsFixed(2)} en $goalTitle?',
+                                    );
+
+                                    if (!confirmSave) {
+                                      setModalState(() => isSaving = false);
+                                      return;
+                                    }
+
                                     // Esto hace que el dinero "salga" del saldo y entre a la meta
                                     final transactionResp =
                                         await TransactionService.createTransaction(
@@ -3523,7 +3554,17 @@ class _InicioViewState extends State<InicioView> {
                                       });
                                     }
 
-                                    // 2. Registrar el RETIRO como una TRANSACCIÓN (INGRESO)
+                                    // 2. Confirmar y registrar el RETIRO como una TRANSACCIÓN (INGRESO)
+                                    final confirmRet = await _confirmBeforeSave(
+                                      context,
+                                      '¿Estás seguro que quieres retirar S/ ${amount.toStringAsFixed(2)} de $goalTitle?',
+                                    );
+
+                                    if (!confirmRet) {
+                                      setModalState(() => isSaving = false);
+                                      return;
+                                    }
+
                                     // Esto hace que el dinero "vuelva" al saldo desde la meta
                                     final transactionResp =
                                         await TransactionService.createTransaction(
@@ -3994,6 +4035,14 @@ class _InicioViewState extends State<InicioView> {
                               );
                               return;
                             }
+
+                            // confirmar antes de llamar al backend para crear transacción
+                            final confirm = await _confirmBeforeSave(
+                              context,
+                              '¿Estás seguro que quieres guardar este ${isIncome ? 'ingreso' : 'gasto'} de S/ ${monto.toStringAsFixed(2)}?',
+                            );
+
+                            if (!confirm) return;
 
                             // llamar al backend para crear transacción (backend crea/encuentra cuenta principal)
                             try {
