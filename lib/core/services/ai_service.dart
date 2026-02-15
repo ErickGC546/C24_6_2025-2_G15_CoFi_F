@@ -94,9 +94,8 @@ class AiService {
 
       // 🆕 Instrucción explícita para respuestas cortas
       final conciseInstruction =
-          "\n\nIMPORTANTE: Tu respuesta debe ser MÁXIMO 4 líneas CORTAS. "
-          "Sé muy breve, directo y específico. No uses formato markdown (**). "
-          "Usa soles (S/) en lugar de dólares. Evita listas largas.";
+          "\n\nResponde de forma concisa y directa en máximo dos párrafos breves."
+          "Usa soles (S/) para montos de dinero. Evita el uso de negritas (**) y listas extensas.";
 
       // 🆕 Preparar el payload completo en UNA SOLA LLAMADA
       final requestBody = jsonEncode({
@@ -139,9 +138,6 @@ class AiService {
 
         // 🇵🇪 Reemplazar símbolos de dólar por soles peruanos
         aiResponse = _replaceCurrencySymbols(aiResponse);
-
-        // 🆕 Forzar truncado a 4 líneas máximo
-        aiResponse = _truncateResponse(aiResponse, maxLines: 4, maxChars: 400);
 
         print('✅ Respuesta procesada (${aiResponse.length} caracteres)');
         return aiResponse;
@@ -205,31 +201,6 @@ class AiService {
       'soles',
     );
     text = text.replaceAll(RegExp(r'\bUSD\b'), 'PEN');
-    return text;
-  }
-
-  // 🆕 Helper para truncar respuestas largas (MÁXIMO 4 LÍNEAS)
-  static String _truncateResponse(
-    String text, {
-    int maxLines = 4,
-    int maxChars = 400,
-  }) {
-    // Dividir por líneas y eliminar líneas vacías
-    final lines = text
-        .split('\n')
-        .where((line) => line.trim().isNotEmpty)
-        .toList();
-
-    // Si tiene más de maxLines, cortar
-    if (lines.length > maxLines) {
-      return lines.take(maxLines).join('\n');
-    }
-
-    // Si el texto completo es muy largo, cortar por caracteres
-    if (text.length > maxChars) {
-      return '${text.substring(0, maxChars)}...';
-    }
-
     return text;
   }
 }

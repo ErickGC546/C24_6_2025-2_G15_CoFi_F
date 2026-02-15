@@ -211,7 +211,10 @@ class _LoginViewState extends State<LoginView> {
                             height: 24,
                           ),
                           const SizedBox(width: 10),
-                          const Text('Ingresa con tu correo de Tecsup'),
+                          const Text(
+                            'Ingresa con tu correo de Tecsup',
+                            style: TextStyle(color: Colors.black),
+                          ),
                         ],
                       ),
               ),
