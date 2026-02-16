@@ -1,10 +1,11 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
-import 'dart:io';
 import 'package:cofi/core/services/voice_service.dart';
-import 'package:cofi/core/services/transaction_service.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
 /// Widget modular del botón de micrófono con animaciones
@@ -31,6 +32,8 @@ class _MicrophoneButtonState extends State<MicrophoneButton>
   final AudioRecorder _audioRecorder = AudioRecorder();
   final FlutterTts _flutterTts = FlutterTts();
   String? _audioPath;
+  String? _confirmationPrompt;
+  Timer? _mainAutoStopTimer;
 
   @override
   void initState() {
@@ -68,10 +71,54 @@ class _MicrophoneButtonState extends State<MicrophoneButton>
     await _flutterTts.setSpeechRate(0.5);
     await _flutterTts.setVolume(1.0);
     await _flutterTts.setPitch(1.0);
+    await _flutterTts.awaitSpeakCompletion(true);
   }
 
   Future<void> _speak(String text) async {
     await _flutterTts.speak(text);
+  }
+
+  Future<void> _speakAndAwaitCompletion(String text) async {
+    final ttsCompleter = Completer<void>();
+
+    _flutterTts.setCompletionHandler(() {
+      if (!ttsCompleter.isCompleted) {
+        ttsCompleter.complete();
+      }
+    });
+
+    try {
+      await _speak(text);
+      await Future.any([
+        ttsCompleter.future,
+        Future.delayed(const Duration(seconds: 10)),
+      ]);
+    } finally {
+      _flutterTts.setCompletionHandler(() {});
+    }
+  }
+
+  void _schedulePrimaryAutoStop() {
+    _mainAutoStopTimer?.cancel();
+    _mainAutoStopTimer = Timer(const Duration(seconds: 5), () {
+      if (_isListening && !_isProcessing) {
+        _stopListening();
+      }
+    });
+  }
+
+  void _cancelPrimaryAutoStop() {
+    _mainAutoStopTimer?.cancel();
+    _mainAutoStopTimer = null;
+  }
+
+  void _restartListeningFlow() {
+    Future.delayed(const Duration(milliseconds: 600), () {
+      if (!mounted) return;
+      if (!_isListening && !_isProcessing) {
+        _startListening();
+      }
+    });
   }
 
   Future<void> _checkPermissions() async {
@@ -133,78 +180,105 @@ class _MicrophoneButtonState extends State<MicrophoneButton>
   }
 
   void _startListening() async {
+    if (_isProcessing) return;
+
+    _cancelPrimaryAutoStop();
+
     setState(() {
       _isListening = true;
     });
 
-    // Iniciar animaciones
     _pulseController.repeat();
     _scaleController.forward();
 
-    // Hablar el prompt
+    Future<void> beginRecording() async {
+      try {
+        final directory = await getTemporaryDirectory();
+        final timestamp = DateTime.now().millisecondsSinceEpoch;
+        _audioPath = '${directory.path}/recording_$timestamp.m4a';
+
+        await _audioRecorder.start(
+          const RecordConfig(
+            encoder: AudioEncoder.aacLc,
+            bitRate: _groqBitRate,
+            sampleRate: 44100,
+          ),
+          path: _audioPath!,
+        );
+
+        _schedulePrimaryAutoStop();
+
+        debugPrint('🎤 Micrófono activado - Esperando transacción...');
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Row(
+                children: [
+                  Icon(Icons.mic, color: Colors.white),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text('Habla ahora... Describe tu transacción'),
+                  ),
+                ],
+              ),
+              backgroundColor: Colors.green.shade600,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+      } catch (e) {
+        debugPrint('❌ Error al iniciar grabación: $e');
+        _cancelPrimaryAutoStop();
+        setState(() {
+          _isListening = false;
+        });
+        _pulseController.stop();
+        _scaleController.reverse();
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Error al iniciar grabación: $e'),
+              backgroundColor: Colors.red.shade600,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
+    }
+
+    final recordingTrigger = Completer<void>();
+
+    void handlePromptFinished() {
+      if (recordingTrigger.isCompleted) return;
+      _flutterTts.setCompletionHandler(() {});
+      recordingTrigger.complete();
+      unawaited(beginRecording());
+    }
+
+    _flutterTts.setCompletionHandler(handlePromptFinished);
+
     await _speak(
       "Dime tu transacción. Por ejemplo: Gasté 50 soles en comida, o Recibí 100 soles de ingreso en salario",
     );
 
-    try {
-      // Obtener directorio temporal para guardar el audio
-      final directory = await getTemporaryDirectory();
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      _audioPath = '${directory.path}/recording_$timestamp.m4a';
+    handlePromptFinished();
 
-      // Iniciar grabación
-      await _audioRecorder.start(
-        const RecordConfig(
-          encoder: AudioEncoder.aacLc,
-          bitRate: _groqBitRate,
-          sampleRate: 44100,
-        ),
-        path: _audioPath!,
-      );
-
-      debugPrint('🎤 Micrófono activado - Esperando transacción...');
-
-      // Mostrar feedback visual
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Row(
-              children: [
-                Icon(Icons.mic, color: Colors.white),
-                SizedBox(width: 8),
-                Expanded(child: Text('Habla ahora... Describe tu transacción')),
-              ],
-            ),
-            backgroundColor: Colors.green.shade600,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-            duration: const Duration(seconds: 3),
-          ),
-        );
-      }
-    } catch (e) {
-      debugPrint('❌ Error al iniciar grabación: $e');
-      setState(() {
-        _isListening = false;
-      });
-      _pulseController.stop();
-      _scaleController.reverse();
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error al iniciar grabación: $e'),
-            backgroundColor: Colors.red.shade600,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
-    }
+    await recordingTrigger.future;
   }
 
   void _stopListening() async {
+    if (!_isListening || _isProcessing) {
+      return;
+    }
+
+    _cancelPrimaryAutoStop();
+
     setState(() {
       _isListening = false;
       _isProcessing = true;
@@ -264,7 +338,11 @@ class _MicrophoneButtonState extends State<MicrophoneButton>
     } catch (e) {
       debugPrint('❌ Error al procesar audio: $e');
 
+      const fallbackVoiceError =
+          'Lo siento, no pude entender la transacción. ¿Podrías repetirla?';
       final errorMessage = VoiceService.formatError(e);
+
+      await _speak(fallbackVoiceError);
 
       if (mounted) {
         ScaffoldMessenger.of(context).clearSnackBars();
@@ -280,6 +358,8 @@ class _MicrophoneButtonState extends State<MicrophoneButton>
           ),
         );
       }
+
+      _restartListeningFlow();
     } finally {
       if (mounted) {
         setState(() {
@@ -316,182 +396,119 @@ class _MicrophoneButtonState extends State<MicrophoneButton>
   }
 
   Future<void> _processTransaction(String audioPath) async {
+    bool parseStepCompleted = false;
+    bool backendError = false;
+
     try {
-      debugPrint('📤 Enviando audio al backend...');
-      // Primero pedir solo PARSE (no guardar) al backend
-      final result = await VoiceService.sendVoiceParse(audioPath);
+      debugPrint('📤 Enviando audio al backend (parse only)...');
+      final result = await VoiceService.sendVoiceTransaction(
+        audioPath,
+        parseOnly: true,
+      );
 
       if (result['success'] != true) {
+        backendError = true;
         throw Exception('Error al procesar la transacción');
       }
 
-      debugPrint('✅ Respuesta del backend (parse) recibida');
-
-      final data = result['data'];
-      final transcription = data['transcription']?.toString().trim() ?? '';
+      final data = (result['data'] ?? {}) as Map<String, dynamic>;
       final parsed = data['parsed'] as Map<String, dynamic>?;
-      final possibleTransaction = data['transaction'] as Map<String, dynamic>?;
 
       if (parsed == null) {
+        backendError = true;
         throw Exception('No se pudo interpretar la transacción');
       }
 
-      // Construir mensaje de confirmación
-      final type = (parsed['type'] ?? 'expense').toString();
-      final typeText = type == 'income' ? 'ingreso' : 'gasto';
-      final amount = (parsed['amount'] ?? parsed['value'] ?? 0).toString();
-      final description = (parsed['description'] ?? '').toString();
-      final categoryName = (parsed['categoryName'] ?? '').toString();
+      parseStepCompleted = true;
 
-      final confirmMessageBuffer = StringBuffer();
-      confirmMessageBuffer.write('He entendido: $typeText de $amount soles');
-      if (categoryName.isNotEmpty)
-        confirmMessageBuffer.write(' en $categoryName');
-      if (description.isNotEmpty)
-        confirmMessageBuffer.write(', concepto: $description');
-      confirmMessageBuffer.write('. ¿Deseas guardar? Di sí o no.');
+      final amountCandidate = parsed['amount'] ?? parsed['value'] ?? 0;
+      final parsedAmount = double.tryParse(amountCandidate.toString()) ?? 0.0;
+      final descriptionRaw = (parsed['description'] ?? '').toString().trim();
+      final categoryName = (parsed['categoryName'] ?? '').toString().trim();
+      final confirmationDescription = descriptionRaw.isNotEmpty
+          ? descriptionRaw
+          : (categoryName.isNotEmpty ? categoryName : 'esta transacción');
+      final promptAmount = parsedAmount > 0
+          ? parsedAmount.toStringAsFixed(2)
+          : amountCandidate.toString();
 
-      final confirmPrompt = confirmMessageBuffer.toString();
+      final userConfirmed = await _askConfirmation(
+        confirmationDescription,
+        promptAmount,
+      );
 
-      // Preguntar por voz
-      await _speak(confirmPrompt);
-
-      // Grabar una respuesta corta (3s) para confirmación
-      final directory = await getTemporaryDirectory();
-      final ts = DateTime.now().millisecondsSinceEpoch;
-      final confirmPath = '${directory.path}/confirm_$ts.m4a';
-
-      try {
-        await _audioRecorder.start(
-          const RecordConfig(
-            encoder: AudioEncoder.aacLc,
-            bitRate: _groqBitRate,
-            sampleRate: 44100,
-          ),
-          path: confirmPath,
-        );
-
-        // Escuchar 3 segundos
-        await Future.delayed(const Duration(seconds: 3));
-
-        final stopPath = await _audioRecorder.stop();
-        final confirmAudioPath = (stopPath != null && stopPath.isNotEmpty)
-            ? stopPath
-            : confirmPath;
-
-        if (confirmAudioPath.isEmpty) {
-          throw Exception('No se pudo grabar la confirmación');
-        }
-
-        // Enviar audio de confirmación para transcribir
-        final confirmResult = await VoiceService.sendVoiceParse(
-          confirmAudioPath,
-        );
-        final confirmData = confirmResult['data'];
-        final confirmTranscription = (confirmData != null)
-            ? (confirmData['transcription']?.toString().toLowerCase() ?? '')
-            : '';
-
-        final confirmed =
-            confirmTranscription.contains('sí') ||
-            confirmTranscription.contains('si') ||
-            confirmTranscription.contains('confirmo') ||
-            confirmTranscription.contains('guardar');
-
-        // Si backend ya creó la transacción en el parse step (por seguridad), guardamos su id
-        final createdId = possibleTransaction != null
-            ? (possibleTransaction['id'] ?? possibleTransaction['_id'])
-                  ?.toString()
-            : null;
-
-        if (!confirmed) {
-          // Usuario dijo no -> si la transacción ya fue creada, intentar eliminarla
-          if (createdId != null) {
-            try {
-              await TransactionService.deleteTransaction(createdId);
-            } catch (e) {
-              debugPrint(
-                '⚠️ No se pudo eliminar transacción creada automáticamente: $e',
-              );
-            }
-          }
-
-          await _speak('Operación cancelada. No se guardó la transacción.');
-
-          if (mounted) {
-            ScaffoldMessenger.of(context).clearSnackBars();
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: const Text('Operación cancelada. No se guardó.'),
-                backgroundColor: Colors.orange.shade600,
-              ),
-            );
-          }
-
-          return;
-        }
-
-        // Usuario confirmó -> crear transacción usando TransactionService
-        final parsedAmount = double.tryParse(amount.toString()) ?? 0.0;
-        final note = description.isNotEmpty ? description : transcription;
-        final categoryId = parsed['categoryId']?.toString();
-
-        await TransactionService.createTransaction(
-          amount: parsedAmount,
-          type: type,
-          note: note,
-          categoryId: categoryId,
-        );
-
-        // newBalance se ignora intencionalmente (el backend actualiza el estado global)
-
-        await _speak('Transacción guardada exitosamente.');
+      if (!userConfirmed) {
+        await _speak('Gasto no guardado');
 
         if (mounted) {
           ScaffoldMessenger.of(context).clearSnackBars();
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(
-                '✓ $typeText de S/ ${parsedAmount.toStringAsFixed(2)} guardado',
-              ),
-              backgroundColor: Colors.green.shade600,
+              content: const Text('Gasto no guardado'),
+              backgroundColor: Colors.orange.shade600,
             ),
           );
-
-          widget.onTranscriptionComplete?.call();
         }
-      } catch (e) {
-        debugPrint('❌ Error en confirmación por voz: $e');
-        rethrow;
-      } finally {
-        // Limpieza del archivo de confirmación
-        try {
-          final f = File(confirmPath);
-          if (await f.exists()) await f.delete();
-        } catch (_) {}
-      }
-    } catch (e) {
-      debugPrint('❌ Error al procesar transacción: $e');
 
-      // Manejar error de forma más amigable
-      String errorMsg = 'No pude procesar tu transacción';
-
-      if (e.toString().contains('créditos')) {
-        errorMsg = 'No tienes créditos de IA suficientes';
-      } else if (e.toString().contains('No se pudo detectar audio') ||
-          e.toString().contains('No se detectó')) {
-        errorMsg = 'No te escuché bien. Habla más claro y cerca del micrófono';
-      } else if (e.toString().contains('No autorizado')) {
-        errorMsg = 'Necesitas iniciar sesión nuevamente';
+        return;
       }
 
-      await _speak(errorMsg);
+      final confirmationResult = await VoiceService.sendVoiceTransaction(
+        audioPath,
+        parseOnly: false,
+      );
+
+      if (confirmationResult['success'] != true) {
+        backendError = true;
+        throw Exception('Error al guardar la transacción');
+      }
+
+      final confirmationData =
+          confirmationResult['data'] as Map<String, dynamic>?;
+
+      await _speak('Transacción guardada exitosamente.');
 
       if (mounted) {
         ScaffoldMessenger.of(context).clearSnackBars();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(errorMsg),
+            content: Text(
+              confirmationData != null
+                  ? VoiceService.formatTransactionResult(confirmationData)
+                  : 'Transacción guardada',
+            ),
+            backgroundColor: Colors.green.shade600,
+          ),
+        );
+
+        widget.onTranscriptionComplete?.call();
+      }
+    } catch (e) {
+      debugPrint('❌ Error al procesar transacción: $e');
+
+      const fallbackVoiceError =
+          'Lo siento, no pude entender la transacción. ¿Podrías repetirla?';
+      String snackMessage = fallbackVoiceError;
+      String voiceMessage = fallbackVoiceError;
+      bool restartFlow = backendError || !parseStepCompleted;
+
+      if (e.toString().contains('créditos')) {
+        snackMessage = 'No tienes créditos de IA suficientes';
+        voiceMessage = snackMessage;
+        restartFlow = false;
+      } else if (e.toString().contains('No autorizado')) {
+        snackMessage = 'Necesitas iniciar sesión nuevamente';
+        voiceMessage = snackMessage;
+        restartFlow = false;
+      }
+
+      await _speak(voiceMessage);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(snackMessage),
             backgroundColor: Colors.orange.shade600,
             behavior: SnackBarBehavior.floating,
             shape: RoundedRectangleBorder(
@@ -502,7 +519,6 @@ class _MicrophoneButtonState extends State<MicrophoneButton>
               label: 'Reintentar',
               textColor: Colors.white,
               onPressed: () {
-                // Permitir reintentar
                 if (!_isListening && !_isProcessing) {
                   _startListening();
                 }
@@ -512,8 +528,141 @@ class _MicrophoneButtonState extends State<MicrophoneButton>
         );
       }
 
-      rethrow;
+      if (restartFlow) {
+        _restartListeningFlow();
+      }
     }
+  }
+
+  Future<bool> _askConfirmation(
+    String confirmationDescription,
+    String promptAmount,
+  ) async {
+    final promptMessage =
+        '¿Guardar $confirmationDescription por S/ $promptAmount?';
+
+    if (mounted) {
+      setState(() {
+        _confirmationPrompt = promptMessage;
+      });
+    }
+
+    try {
+      await _speakAndAwaitCompletion(promptMessage);
+      return await _captureConfirmationResponse();
+    } finally {
+      if (mounted) {
+        setState(() {
+          _confirmationPrompt = null;
+        });
+      }
+    }
+  }
+
+  Future<bool> _captureConfirmationResponse() async {
+    final directory = await getTemporaryDirectory();
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final confirmPath = '${directory.path}/confirm_$ts.m4a';
+
+    if (mounted) {
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.clearSnackBars();
+      messenger.showSnackBar(
+        SnackBar(
+          content: const Text('Responde "sí" o "no"'),
+          backgroundColor: Colors.blue.shade600,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+
+    try {
+      await _audioRecorder.start(
+        const RecordConfig(
+          encoder: AudioEncoder.aacLc,
+          bitRate: _groqBitRate,
+          sampleRate: 44100,
+        ),
+        path: confirmPath,
+      );
+
+      await Future.delayed(const Duration(seconds: 5));
+
+      final stopPath = await _audioRecorder.stop();
+      final confirmAudioPath = (stopPath != null && stopPath.isNotEmpty)
+          ? stopPath
+          : confirmPath;
+
+      if (confirmAudioPath.isEmpty) {
+        throw Exception('No se pudo obtener la confirmación');
+      }
+
+      final confirmResult = await VoiceService.sendVoiceTransaction(
+        confirmAudioPath,
+        parseOnly: true,
+      );
+      final confirmData = confirmResult['data'] as Map<String, dynamic>?;
+      final confirmTranscription =
+          confirmData?['transcription']?.toString() ?? '';
+      final normalizedAnswer = _normalizeConfirmationText(confirmTranscription);
+
+      const positiveKeywords = [
+        'si',
+        'sí',
+        'ya',
+        'claro',
+        'dale',
+        'guarda',
+        'guardalo',
+        'guardame',
+        'confirma',
+        'confirmo',
+      ];
+
+      const negativeKeywords = ['no', 'espera', 'cancela', 'cancelalo'];
+
+      if (_containsKeyword(normalizedAnswer, negativeKeywords)) {
+        return false;
+      }
+
+      if (_containsKeyword(normalizedAnswer, positiveKeywords)) {
+        return true;
+      }
+
+      return false;
+    } catch (e) {
+      debugPrint('❌ Error en confirmación por voz: $e');
+      rethrow;
+    } finally {
+      try {
+        final f = File(confirmPath);
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+    }
+  }
+
+  String _normalizeConfirmationText(String value) {
+    var normalized = value.toLowerCase();
+    const accentMap = {'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u'};
+
+    accentMap.forEach((key, replacement) {
+      normalized = normalized.replaceAll(key, replacement);
+    });
+
+    normalized = normalized
+        .replaceAll(RegExp(r'[^a-zñ\s]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+
+    return normalized;
+  }
+
+  bool _containsKeyword(String normalized, List<String> keywords) {
+    return keywords.any(
+      (keyword) =>
+          normalized.contains(keyword) ||
+          normalized.split(' ').contains(keyword),
+    );
   }
 
   void _toggleListening() {
@@ -533,6 +682,7 @@ class _MicrophoneButtonState extends State<MicrophoneButton>
   Widget build(BuildContext context) {
     return Stack(
       alignment: Alignment.center,
+      clipBehavior: Clip.none,
       children: [
         // Ondas de pulso (solo cuando está activo)
         if (_isListening) ...[
@@ -615,6 +765,28 @@ class _MicrophoneButtonState extends State<MicrophoneButton>
               ),
             ),
           ),
+
+        if (_confirmationPrompt != null)
+          Positioned(
+            bottom: -80,
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 220),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.blueGrey.shade900.withOpacity(0.9),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                _confirmationPrompt!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -646,6 +818,7 @@ class _MicrophoneButtonState extends State<MicrophoneButton>
     _pulseController.dispose();
     _scaleController.dispose();
     _flutterTts.stop();
+    _mainAutoStopTimer?.cancel();
     super.dispose();
   }
 }

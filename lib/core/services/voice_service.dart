@@ -185,6 +185,13 @@ class VoiceService {
     return await sendVoiceTransaction(audioPath, parseOnly: true);
   }
 
+  /// Confirma el guardado de la transacción en el backend (parseOnly: false).
+  static Future<Map<String, dynamic>> confirmVoiceTransaction(
+    String audioPath,
+  ) async {
+    return await sendVoiceTransaction(audioPath, parseOnly: false);
+  }
+
   /// Formatea el resultado de la transacción para mostrar al usuario
   static String formatTransactionResult(Map<String, dynamic> data) {
     try {
